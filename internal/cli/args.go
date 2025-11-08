@@ -1,0 +1,109 @@
+package cli
+
+import (
+	"flag"
+	"fmt"
+	"os"
+
+	"github.com/tis24dev/proxmox-backup/internal/types"
+)
+
+// Args holds the parsed command-line arguments
+type Args struct {
+	ConfigPath  string
+	LogLevel    types.LogLevel
+	DryRun      bool
+	ShowVersion bool
+	ShowHelp    bool
+}
+
+// Parse parses command-line arguments and returns Args struct
+func Parse() *Args {
+	args := &Args{}
+
+	// Define flags
+	flag.StringVar(&args.ConfigPath, "config", "/opt/proxmox-backup/env/backup.env",
+		"Path to configuration file")
+	flag.StringVar(&args.ConfigPath, "c", "/opt/proxmox-backup/env/backup.env",
+		"Path to configuration file (shorthand)")
+
+	var logLevelStr string
+	flag.StringVar(&logLevelStr, "log-level", "",
+		"Log level (debug|info|warning|error|critical)")
+	flag.StringVar(&logLevelStr, "l", "",
+		"Log level (shorthand)")
+
+	flag.BoolVar(&args.DryRun, "dry-run", false,
+		"Perform a dry run without making actual changes")
+	flag.BoolVar(&args.DryRun, "n", false,
+		"Perform a dry run (shorthand)")
+
+	flag.BoolVar(&args.ShowVersion, "version", false,
+		"Show version information")
+	flag.BoolVar(&args.ShowVersion, "v", false,
+		"Show version information (shorthand)")
+
+	flag.BoolVar(&args.ShowHelp, "help", false,
+		"Show help message")
+	flag.BoolVar(&args.ShowHelp, "h", false,
+		"Show help message (shorthand)")
+
+	// Custom usage message
+	flag.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage: %s [options]\n\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "Proxmox Backup Manager - Go Edition\n\n")
+		fmt.Fprintf(os.Stderr, "Options:\n")
+		flag.PrintDefaults()
+		fmt.Fprintf(os.Stderr, "\nExamples:\n")
+		fmt.Fprintf(os.Stderr, "  %s -c /path/to/config.env\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "  %s --dry-run --log-level debug\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "  %s --version\n", os.Args[0])
+	}
+
+	// Parse flags
+	flag.Parse()
+
+	// Parse log level if provided
+	if logLevelStr != "" {
+		args.LogLevel = parseLogLevel(logLevelStr)
+	} else {
+		args.LogLevel = types.LogLevelNone // Will be overridden by config
+	}
+
+	return args
+}
+
+// parseLogLevel converts string to LogLevel
+func parseLogLevel(s string) types.LogLevel {
+	switch s {
+	case "debug", "5":
+		return types.LogLevelDebug
+	case "info", "4":
+		return types.LogLevelInfo
+	case "warning", "3":
+		return types.LogLevelWarning
+	case "error", "2":
+		return types.LogLevelError
+	case "critical", "1":
+		return types.LogLevelCritical
+	case "none", "0":
+		return types.LogLevelNone
+	default:
+		return types.LogLevelInfo
+	}
+}
+
+// ShowHelp displays help message and exits
+func ShowHelp() {
+	flag.Usage()
+	os.Exit(0)
+}
+
+// ShowVersion displays version information and exits
+func ShowVersion() {
+	fmt.Printf("Proxmox Backup Manager (Go Edition)\n")
+	fmt.Printf("Version: 0.2.0-dev\n")
+	fmt.Printf("Build: development\n")
+	fmt.Printf("Author: tis24dev\n")
+	os.Exit(0)
+}
