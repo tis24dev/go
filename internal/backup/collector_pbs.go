@@ -3,11 +3,13 @@ package backup
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/tis24dev/proxmox-backup/internal/pbs"
@@ -446,11 +448,11 @@ func (c *Collector) collectDatastoreNamespaces(ds pbsDatastore, datastoreDir str
 	}
 
 	if err := os.WriteFile(outputPath, data, 0640); err != nil {
-		c.stats.FilesFailed++
+		c.incFilesFailed()
 		return fmt.Errorf("failed to write namespaces file: %w", err)
 	}
 
-	c.stats.FilesProcessed++
+	c.incFilesProcessed()
 	if fromFallback {
 		c.logger.Debug("Successfully collected %d namespaces for datastore %s via filesystem fallback", len(namespaces), ds.Name)
 	} else {
@@ -535,6 +537,19 @@ func (c *Collector) collectPBSPxarMetadata(ctx context.Context, datastores []pbs
 		return nil
 	}
 	c.logger.Debug("Collecting PXAR metadata for %d datastores", len(datastores))
+	dsWorkers := c.config.PxarDatastoreConcurrency
+	if dsWorkers <= 0 {
+		dsWorkers = 1
+	}
+	intraWorkers := c.config.PxarIntraConcurrency
+	if intraWorkers <= 0 {
+		intraWorkers = 1
+	}
+	mode := "sequential"
+	if dsWorkers > 1 {
+		mode = fmt.Sprintf("parallel (%d workers)", dsWorkers)
+	}
+	c.logger.Debug("PXAR metadata concurrency: datastores=%s, per-datastore workers=%d", mode, intraWorkers)
 
 	metaRoot := filepath.Join(c.tempDir, "var/lib/proxmox-backup/pxar_metadata")
 	if err := c.ensureDir(metaRoot); err != nil {
@@ -551,92 +566,145 @@ func (c *Collector) collectPBSPxarMetadata(ctx context.Context, datastores []pbs
 		return fmt.Errorf("failed to create small_pxar directory: %w", err)
 	}
 
+	workerLimit := dsWorkers
+
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	var (
+		wg       sync.WaitGroup
+		sem      = make(chan struct{}, workerLimit)
+		errMu    sync.Mutex
+		firstErr error
+	)
+
 	for _, ds := range datastores {
+		ds := ds
 		if ds.Path == "" {
 			continue
 		}
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		if stat, err := os.Stat(ds.Path); err != nil || !stat.IsDir() {
-			c.logger.Debug("Skipping PXAR metadata for datastore %s (path not accessible: %s)", ds.Name, ds.Path)
-			continue
-		}
 
-		start := time.Now()
-		c.logger.Debug("PXAR: scanning datastore %s at %s", ds.Name, ds.Path)
-
-		dsDir := filepath.Join(metaRoot, ds.Name)
-		if err := c.ensureDir(dsDir); err != nil {
-			c.logger.Warning("Failed to create PXAR metadata directory for %s: %v", ds.Name, err)
-			continue
-		}
-
-		for _, base := range []string{
-			filepath.Join(selectedRoot, ds.Name, "vm"),
-			filepath.Join(selectedRoot, ds.Name, "ct"),
-			filepath.Join(smallRoot, ds.Name, "vm"),
-			filepath.Join(smallRoot, ds.Name, "ct"),
-		} {
-			if err := c.ensureDir(base); err != nil {
-				c.logger.Debug("Failed to prepare PXAR directory %s: %v", base, err)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			select {
+			case sem <- struct{}{}:
+			case <-ctx.Done():
+				return
 			}
-		}
+			defer func() { <-sem }()
 
-		meta := struct {
-			Name              string        `json:"name"`
-			Path              string        `json:"path"`
-			Comment           string        `json:"comment,omitempty"`
-			ScannedAt         time.Time     `json:"scanned_at"`
-			SampleDirectories []string      `json:"sample_directories,omitempty"`
-			SamplePxarFiles   []FileSummary `json:"sample_pxar_files,omitempty"`
-		}{
-			Name:      ds.Name,
-			Path:      ds.Path,
-			Comment:   ds.Comment,
-			ScannedAt: time.Now(),
-		}
+			if err := c.processPxarDatastore(ctx, ds, metaRoot, selectedRoot, smallRoot); err != nil {
+				if errors.Is(err, context.Canceled) {
+					return
+				}
+				errMu.Lock()
+				if firstErr == nil {
+					firstErr = err
+					cancel()
+				}
+				errMu.Unlock()
+			}
+		}()
+	}
 
-		if dirs, err := c.sampleDirectories(ctx, ds.Path, 2, 30); err == nil && len(dirs) > 0 {
-			meta.SampleDirectories = dirs
-			c.logger.Debug("PXAR: datastore %s -> selected %d sample directories", ds.Name, len(dirs))
-		} else if err != nil {
-			c.logger.Debug("PXAR: datastore %s -> sampleDirectories error: %v", ds.Name, err)
-		}
+	wg.Wait()
 
-		patterns := []string{"*.pxar"}
-		if files, err := c.sampleFiles(ctx, ds.Path, patterns, 4, 200); err == nil && len(files) > 0 {
-			meta.SamplePxarFiles = files
-			c.logger.Debug("PXAR: datastore %s -> selected %d sample pxar files", ds.Name, len(files))
-		} else if err != nil {
-			c.logger.Debug("PXAR: datastore %s -> sampleFiles error: %v", ds.Name, err)
-		}
-
-		data, err := json.MarshalIndent(meta, "", "  ")
-		if err != nil {
-			return fmt.Errorf("failed to marshal PXAR metadata for %s: %w", ds.Name, err)
-		}
-
-		if err := c.writeReportFile(filepath.Join(dsDir, "metadata.json"), data); err != nil {
-			return err
-		}
-
-		if err := c.writePxarSubdirReport(filepath.Join(dsDir, fmt.Sprintf("%s_subdirs.txt", ds.Name)), ds); err != nil {
-			return err
-		}
-
-		if err := c.writePxarListReport(filepath.Join(dsDir, fmt.Sprintf("%s_vm_pxar_list.txt", ds.Name)), ds, "vm"); err != nil {
-			return err
-		}
-
-		if err := c.writePxarListReport(filepath.Join(dsDir, fmt.Sprintf("%s_ct_pxar_list.txt", ds.Name)), ds, "ct"); err != nil {
-			return err
-		}
-
-		c.logger.Debug("PXAR: datastore %s completed in %s", ds.Name, time.Since(start).Truncate(time.Millisecond))
+	if firstErr != nil {
+		return firstErr
+	}
+	if err := ctx.Err(); err != nil && !errors.Is(err, context.Canceled) {
+		return err
 	}
 
 	c.logger.Debug("PXAR metadata collection completed")
+	return nil
+}
+
+func (c *Collector) processPxarDatastore(ctx context.Context, ds pbsDatastore, metaRoot, selectedRoot, smallRoot string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if ds.Path == "" {
+		return nil
+	}
+
+	stat, err := os.Stat(ds.Path)
+	if err != nil || !stat.IsDir() {
+		c.logger.Debug("Skipping PXAR metadata for datastore %s (path not accessible: %s)", ds.Name, ds.Path)
+		return nil
+	}
+
+	start := time.Now()
+	c.logger.Debug("PXAR: scanning datastore %s at %s", ds.Name, ds.Path)
+
+	dsDir := filepath.Join(metaRoot, ds.Name)
+	if err := c.ensureDir(dsDir); err != nil {
+		return fmt.Errorf("failed to create PXAR metadata directory for %s: %w", ds.Name, err)
+	}
+
+	for _, base := range []string{
+		filepath.Join(selectedRoot, ds.Name, "vm"),
+		filepath.Join(selectedRoot, ds.Name, "ct"),
+		filepath.Join(smallRoot, ds.Name, "vm"),
+		filepath.Join(smallRoot, ds.Name, "ct"),
+	} {
+		if err := c.ensureDir(base); err != nil {
+			c.logger.Debug("Failed to prepare PXAR directory %s: %v", base, err)
+		}
+	}
+
+	meta := struct {
+		Name              string        `json:"name"`
+		Path              string        `json:"path"`
+		Comment           string        `json:"comment,omitempty"`
+		ScannedAt         time.Time     `json:"scanned_at"`
+		SampleDirectories []string      `json:"sample_directories,omitempty"`
+		SamplePxarFiles   []FileSummary `json:"sample_pxar_files,omitempty"`
+	}{
+		Name:      ds.Name,
+		Path:      ds.Path,
+		Comment:   ds.Comment,
+		ScannedAt: time.Now(),
+	}
+
+	if dirs, err := c.sampleDirectories(ctx, ds.Path, 2, 30); err == nil && len(dirs) > 0 {
+		meta.SampleDirectories = dirs
+		c.logger.Debug("PXAR: datastore %s -> selected %d sample directories", ds.Name, len(dirs))
+	} else if err != nil {
+		c.logger.Debug("PXAR: datastore %s -> sampleDirectories error: %v", ds.Name, err)
+	}
+
+	patterns := []string{"*.pxar", "*.pxar.*", "catalog.pxar", "catalog.pxar.*"}
+	if files, err := c.sampleFiles(ctx, ds.Path, patterns, 8, 200); err == nil && len(files) > 0 {
+		meta.SamplePxarFiles = files
+		c.logger.Debug("PXAR: datastore %s -> selected %d sample pxar files", ds.Name, len(files))
+	} else if err != nil {
+		c.logger.Debug("PXAR: datastore %s -> sampleFiles error: %v", ds.Name, err)
+	}
+
+	data, err := json.MarshalIndent(meta, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal PXAR metadata for %s: %w", ds.Name, err)
+	}
+
+	if err := c.writeReportFile(filepath.Join(dsDir, "metadata.json"), data); err != nil {
+		return err
+	}
+
+	if err := c.writePxarSubdirReport(filepath.Join(dsDir, fmt.Sprintf("%s_subdirs.txt", ds.Name)), ds); err != nil {
+		return err
+	}
+
+	if err := c.writePxarListReport(filepath.Join(dsDir, fmt.Sprintf("%s_vm_pxar_list.txt", ds.Name)), ds, "vm"); err != nil {
+		return err
+	}
+
+	if err := c.writePxarListReport(filepath.Join(dsDir, fmt.Sprintf("%s_ct_pxar_list.txt", ds.Name)), ds, "ct"); err != nil {
+		return err
+	}
+
+	c.logger.Debug("PXAR: datastore %s completed in %s", ds.Name, time.Since(start).Truncate(time.Millisecond))
 	return nil
 }
 

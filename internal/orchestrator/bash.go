@@ -663,7 +663,7 @@ func (o *Orchestrator) RunGoBackup(ctx context.Context, pType types.ProxmoxType,
 			}
 			return nil, &BackupError{
 				Phase: "disk",
-				Err:   fmt.Errorf(errMsg),
+				Err:   fmt.Errorf("%s", errMsg),
 				Code:  types.ExitDiskSpaceError,
 			}
 		}
@@ -1213,6 +1213,12 @@ func applyCollectorOverrides(cc *backup.CollectorConfig, cfg *config.Config) {
 	}
 	if cfg.PxarIntraConcurrency > 0 {
 		cc.PxarIntraConcurrency = cfg.PxarIntraConcurrency
+	}
+	if cfg.PxarScanFanoutLevel > 0 {
+		cc.PxarScanFanoutLevel = cfg.PxarScanFanoutLevel
+	}
+	if cfg.PxarScanMaxRoots > 0 {
+		cc.PxarScanMaxRoots = cfg.PxarScanMaxRoots
 	}
 
 	cc.CustomBackupPaths = append([]string(nil), cfg.CustomBackupPaths...)

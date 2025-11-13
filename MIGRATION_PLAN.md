@@ -368,7 +368,7 @@ mkdir -p build
 ```go
 module github.com/tis24dev/proxmox-backup
 
-go 1.21
+go 1.25
 
 // Le dipendenze verranno aggiunte automaticamente quando usi 'go get'
 ```
@@ -584,7 +584,7 @@ git push -u origin migration-go
 
 ### Checklist Fase 0
 
-- [ ] Go 1.21+ installato (verifica: `go version`)
+- [ ] Go 1.25+ installato (verifica: `go version`)
 - [ ] Directory `/opt/proxmox-backup` esistente
 - [ ] Backup completo del sistema bash esistente
 - [ ] `go mod init` eseguito con path corretto
@@ -2101,7 +2101,7 @@ type BackupStats struct {
 - [ ] Backup completo del sistema attuale
 - [ ] Git repository inizializzato
 - [ ] Ambiente di test configurato
-- [ ] Go 1.21+ installato
+- [ ] Go 1.25+ installato
 - [ ] Dipendenze sistema verificate
 - [ ] Team informato e allineato
 

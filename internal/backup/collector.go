@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"io/fs"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/tis24dev/proxmox-backup/internal/logging"
@@ -39,9 +41,37 @@ type Collector struct {
 	logger   *logging.Logger
 	config   *CollectorConfig
 	stats    *CollectionStats
+	statsMu  sync.Mutex
 	tempDir  string
 	proxType types.ProxmoxType
 	dryRun   bool
+}
+
+func (c *Collector) incFilesProcessed() {
+	c.statsMu.Lock()
+	c.stats.FilesProcessed++
+	c.statsMu.Unlock()
+}
+
+func (c *Collector) incFilesFailed() {
+	c.statsMu.Lock()
+	c.stats.FilesFailed++
+	c.statsMu.Unlock()
+}
+
+func (c *Collector) incDirsCreated() {
+	c.statsMu.Lock()
+	c.stats.DirsCreated++
+	c.statsMu.Unlock()
+}
+
+func (c *Collector) addBytesCollected(delta int64) {
+	if delta == 0 {
+		return
+	}
+	c.statsMu.Lock()
+	c.stats.BytesCollected += delta
+	c.statsMu.Unlock()
 }
 
 // CollectorConfig holds configuration for backup collection
@@ -89,6 +119,8 @@ type CollectorConfig struct {
 	// PXAR scanning concurrency
 	PxarDatastoreConcurrency int
 	PxarIntraConcurrency     int
+	PxarScanFanoutLevel      int
+	PxarScanMaxRoots         int
 
 	// Exclude patterns (glob patterns to skip)
 	ExcludePatterns []string
@@ -148,6 +180,12 @@ func (c *CollectorConfig) Validate() error {
 	}
 	if c.PxarIntraConcurrency <= 0 {
 		c.PxarIntraConcurrency = 4
+	}
+	if c.PxarScanFanoutLevel <= 0 {
+		c.PxarScanFanoutLevel = 1
+	}
+	if c.PxarScanMaxRoots <= 0 {
+		c.PxarScanMaxRoots = 2048
 	}
 
 	return nil
@@ -210,6 +248,8 @@ func GetDefaultCollectorConfig() *CollectorConfig {
 
 		PxarDatastoreConcurrency: 3,
 		PxarIntraConcurrency:     4,
+		PxarScanFanoutLevel:      2,
+		PxarScanMaxRoots:         2048,
 
 		ExcludePatterns:   append([]string(nil), defaultExcludePatterns...),
 		CustomBackupPaths: []string{},
@@ -254,8 +294,9 @@ func (c *Collector) CollectAll(ctx context.Context) error {
 	}
 	c.logger.Debug("Baseline system information collected successfully")
 
+	stats := c.GetStats()
 	c.logger.Debug("Collection completed: %d files, %d failed, %d dirs created",
-		c.stats.FilesProcessed, c.stats.FilesFailed, c.stats.DirsCreated)
+		stats.FilesProcessed, stats.FilesFailed, stats.DirsCreated)
 
 	return nil
 }
@@ -403,7 +444,7 @@ func (c *Collector) ensureDir(path string) error {
 		return err
 	}
 	if created {
-		c.stats.DirsCreated++
+		c.incDirsCreated()
 	}
 	return nil
 }
@@ -421,7 +462,7 @@ func (c *Collector) safeCopyFile(ctx context.Context, src, dest, description str
 			c.logger.Debug("%s not found: %s (skipping)", description, src)
 			return nil
 		}
-		c.stats.FilesFailed++
+		c.incFilesFailed()
 		return fmt.Errorf("failed to stat %s: %w", src, err)
 	}
 
@@ -432,7 +473,7 @@ func (c *Collector) safeCopyFile(ctx context.Context, src, dest, description str
 
 	if c.dryRun {
 		c.logger.Debug("[DRY RUN] Would copy file: %s -> %s", src, dest)
-		c.stats.FilesProcessed++
+		c.incFilesProcessed()
 		return nil
 	}
 
@@ -440,29 +481,29 @@ func (c *Collector) safeCopyFile(ctx context.Context, src, dest, description str
 	if info.Mode()&os.ModeSymlink != 0 {
 		target, err := os.Readlink(src)
 		if err != nil {
-			c.stats.FilesFailed++
+			c.incFilesFailed()
 			return fmt.Errorf("failed to read symlink %s: %w", src, err)
 		}
 
 		if err := c.ensureDir(filepath.Dir(dest)); err != nil {
-			c.stats.FilesFailed++
+			c.incFilesFailed()
 			return err
 		}
 
 		// Remove existing file if present
 		if _, err := os.Lstat(dest); err == nil {
 			if err := os.Remove(dest); err != nil {
-				c.stats.FilesFailed++
+				c.incFilesFailed()
 				return fmt.Errorf("failed to replace existing file %s: %w", dest, err)
 			}
 		}
 
 		if err := os.Symlink(target, dest); err != nil {
-			c.stats.FilesFailed++
+			c.incFilesFailed()
 			return fmt.Errorf("failed to create symlink %s -> %s: %w", dest, target, err)
 		}
 
-		c.stats.FilesProcessed++
+		c.incFilesProcessed()
 		c.logger.Debug("Successfully copied symlink %s -> %s", dest, target)
 		return nil
 	}
@@ -475,14 +516,14 @@ func (c *Collector) safeCopyFile(ctx context.Context, src, dest, description str
 
 	// Ensure destination directory exists
 	if err := c.ensureDir(filepath.Dir(dest)); err != nil {
-		c.stats.FilesFailed++
+		c.incFilesFailed()
 		return err
 	}
 
 	// Open source file
 	srcFile, err := os.Open(src)
 	if err != nil {
-		c.stats.FilesFailed++
+		c.incFilesFailed()
 		return fmt.Errorf("failed to open %s: %w", src, err)
 	}
 	defer srcFile.Close()
@@ -490,7 +531,7 @@ func (c *Collector) safeCopyFile(ctx context.Context, src, dest, description str
 	// Create destination file with restrictive permissions
 	destFile, err := os.OpenFile(dest, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0640)
 	if err != nil {
-		c.stats.FilesFailed++
+		c.incFilesFailed()
 		return fmt.Errorf("failed to create %s: %w", dest, err)
 	}
 	defer destFile.Close()
@@ -498,12 +539,12 @@ func (c *Collector) safeCopyFile(ctx context.Context, src, dest, description str
 	// Copy content
 	written, err := io.Copy(destFile, srcFile)
 	if err != nil {
-		c.stats.FilesFailed++
+		c.incFilesFailed()
 		return fmt.Errorf("failed to copy %s: %w", src, err)
 	}
 
-	c.stats.FilesProcessed++
-	c.stats.BytesCollected += written
+	c.incFilesProcessed()
+	c.addBytesCollected(int64(written))
 	c.logger.Debug("Successfully collected %s: %s", description, src)
 
 	return nil
@@ -594,7 +635,7 @@ func (c *Collector) safeCmdOutput(ctx context.Context, cmd, output, description 
 	// Check if command exists
 	if _, err := exec.LookPath(cmdParts[0]); err != nil {
 		if critical {
-			c.stats.FilesFailed++
+			c.incFilesFailed()
 			return fmt.Errorf("critical command not available: %s", cmdParts[0])
 		}
 		c.logger.Debug("Command not available: %s (skipping %s)", cmdParts[0], description)
@@ -615,7 +656,7 @@ func (c *Collector) safeCmdOutput(ctx context.Context, cmd, output, description 
 	execCmd := exec.CommandContext(ctx, cmdParts[0], cmdParts[1:]...)
 	outFile, err := os.OpenFile(output, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0640)
 	if err != nil {
-		c.stats.FilesFailed++
+		c.incFilesFailed()
 		return fmt.Errorf("failed to create output file: %w", err)
 	}
 	defer func() {
@@ -638,7 +679,7 @@ func (c *Collector) safeCmdOutput(ctx context.Context, cmd, output, description 
 			c.logger.Debug("Failed to remove incomplete output %s: %v", output, removeErr)
 		}
 		if critical {
-			c.stats.FilesFailed++
+			c.incFilesFailed()
 			return fmt.Errorf("critical command failed for %s: %w", description, err)
 		}
 		cmdString := cmd
@@ -654,7 +695,7 @@ func (c *Collector) safeCmdOutput(ctx context.Context, cmd, output, description 
 		return nil // Non-critical failure
 	}
 
-	c.stats.FilesProcessed++
+	c.incFilesProcessed()
 	c.logger.Debug("Successfully collected %s via command: %s", description, cmd)
 
 	return nil
@@ -675,7 +716,7 @@ func (c *Collector) safeCmdOutputWithPBSAuth(ctx context.Context, cmd, output, d
 	// Check if command exists
 	if _, err := exec.LookPath(cmdParts[0]); err != nil {
 		if critical {
-			c.stats.FilesFailed++
+			c.incFilesFailed()
 			return fmt.Errorf("critical command not available: %s", cmdParts[0])
 		}
 		c.logger.Debug("Command not available: %s (skipping %s)", cmdParts[0], description)
@@ -717,7 +758,7 @@ func (c *Collector) safeCmdOutputWithPBSAuth(ctx context.Context, cmd, output, d
 
 	outFile, err := os.OpenFile(output, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0640)
 	if err != nil {
-		c.stats.FilesFailed++
+		c.incFilesFailed()
 		return fmt.Errorf("failed to create output file: %w", err)
 	}
 	defer func() {
@@ -740,7 +781,7 @@ func (c *Collector) safeCmdOutputWithPBSAuth(ctx context.Context, cmd, output, d
 			c.logger.Debug("Failed to remove incomplete output %s: %v", output, removeErr)
 		}
 		if critical {
-			c.stats.FilesFailed++
+			c.incFilesFailed()
 			return fmt.Errorf("critical command failed for %s: %w", description, err)
 		}
 		cmdString := cmd
@@ -756,7 +797,7 @@ func (c *Collector) safeCmdOutputWithPBSAuth(ctx context.Context, cmd, output, d
 		return nil // Non-critical failure
 	}
 
-	c.stats.FilesProcessed++
+	c.incFilesProcessed()
 	c.logger.Debug("Successfully collected %s via PBS-authenticated command: %s", description, cmd)
 
 	return nil
@@ -777,7 +818,7 @@ func (c *Collector) safeCmdOutputWithPBSAuthForDatastore(ctx context.Context, cm
 	// Check if command exists
 	if _, err := exec.LookPath(cmdParts[0]); err != nil {
 		if critical {
-			c.stats.FilesFailed++
+			c.incFilesFailed()
 			return fmt.Errorf("critical command not available: %s", cmdParts[0])
 		}
 		c.logger.Debug("Command not available: %s (skipping %s)", cmdParts[0], description)
@@ -841,7 +882,7 @@ func (c *Collector) safeCmdOutputWithPBSAuthForDatastore(ctx context.Context, cm
 
 	outFile, err := os.OpenFile(output, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0640)
 	if err != nil {
-		c.stats.FilesFailed++
+		c.incFilesFailed()
 		return fmt.Errorf("failed to create output file: %w", err)
 	}
 	defer func() {
@@ -864,7 +905,7 @@ func (c *Collector) safeCmdOutputWithPBSAuthForDatastore(ctx context.Context, cm
 			c.logger.Debug("Failed to remove incomplete output %s: %v", output, removeErr)
 		}
 		if critical {
-			c.stats.FilesFailed++
+			c.incFilesFailed()
 			return fmt.Errorf("critical command failed for %s: %w", description, err)
 		}
 		cmdString := cmd
@@ -880,7 +921,7 @@ func (c *Collector) safeCmdOutputWithPBSAuthForDatastore(ctx context.Context, cm
 		return nil // Non-critical failure
 	}
 
-	c.stats.FilesProcessed++
+	c.incFilesProcessed()
 	c.logger.Debug("Successfully collected %s via PBS-authenticated command for datastore %s: %s", description, datastoreName, cmd)
 
 	return nil
@@ -924,7 +965,10 @@ func sanitizeFilename(name string) string {
 
 // GetStats returns current collection statistics
 func (c *Collector) GetStats() *CollectionStats {
-	return c.stats
+	c.statsMu.Lock()
+	defer c.statsMu.Unlock()
+	snapshot := *c.stats
+	return &snapshot
 }
 
 func (c *Collector) writeReportFile(path string, data []byte) error {
@@ -934,17 +978,17 @@ func (c *Collector) writeReportFile(path string, data []byte) error {
 	}
 
 	if err := c.ensureDir(filepath.Dir(path)); err != nil {
-		c.stats.FilesFailed++
+		c.incFilesFailed()
 		return fmt.Errorf("failed to create report directory: %w", err)
 	}
 
 	if err := os.WriteFile(path, data, 0640); err != nil {
-		c.stats.FilesFailed++
+		c.incFilesFailed()
 		return fmt.Errorf("failed to write report %s: %w", path, err)
 	}
 
-	c.stats.FilesProcessed++
-	c.stats.BytesCollected += int64(len(data))
+	c.incFilesProcessed()
+	c.addBytesCollected(int64(len(data)))
 	c.logger.Debug("Successfully wrote report file: %s", path)
 	return nil
 }
@@ -961,7 +1005,7 @@ func (c *Collector) captureCommandOutput(ctx context.Context, cmd, output, descr
 
 	if _, err := exec.LookPath(parts[0]); err != nil {
 		if critical {
-			c.stats.FilesFailed++
+			c.incFilesFailed()
 			return nil, fmt.Errorf("critical command not available: %s", parts[0])
 		}
 		c.logger.Debug("Command not available: %s (skipping %s)", parts[0], description)
@@ -978,7 +1022,7 @@ func (c *Collector) captureCommandOutput(ctx context.Context, cmd, output, descr
 	if err != nil {
 		cmdString := strings.Join(parts, " ")
 		if critical {
-			c.stats.FilesFailed++
+			c.incFilesFailed()
 			return nil, fmt.Errorf("critical command `%s` failed for %s: %w (output: %s)", cmdString, description, err, summarizeCommandOutputText(string(out)))
 		}
 		c.logger.Warning("Skipping %s: command `%s` failed (%v). Non-critical; backup continues. Output: %s",
@@ -1049,152 +1093,594 @@ func (c *Collector) collectCommandOptional(ctx context.Context, cmd, output, des
 
 func (c *Collector) sampleDirectories(ctx context.Context, root string, maxDepth, limit int) ([]string, error) {
 	results := make([]string, 0, limit)
-	stopErr := errors.New("directory sample limit reached")
-	start := time.Now()
-	lastLog := start
-	visited := 0
+	if limit <= 0 {
+		return results, nil
+	}
 
-	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-
-		if path == root {
-			return nil
-		}
-
-		if d.IsDir() {
-			visited++
-			if time.Since(lastLog) > 2*time.Second {
-				c.logger.Debug("PXAR sampleDirectories: root=%s visited=%d selected=%d", root, visited, len(results))
-				lastLog = time.Now()
-			}
-		}
-
-		if c.shouldExclude(path) {
-			if d.IsDir() {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-
-		rel, err := filepath.Rel(root, path)
-		if err != nil {
-			return err
-		}
-		if rel == "." {
-			return nil
-		}
-
-		depth := strings.Count(rel, string(filepath.Separator))
-		if d.IsDir() {
-			if depth >= maxDepth {
-				return filepath.SkipDir
-			}
-			if len(results) < limit {
-				results = append(results, filepath.ToSlash(rel))
-				if len(results) >= limit {
-					return stopErr
-				}
-			}
-		}
-		return nil
-	})
-
-	if err != nil && !errors.Is(err, stopErr) && !errors.Is(err, context.Canceled) {
+	startDirs, err := c.computePxarWorkerRoots(ctx, root, "directories")
+	if err != nil {
 		return results, err
 	}
 
+	if len(startDirs) == 0 {
+		c.logger.Debug("PXAR sampleDirectories: root=%s completed (selected=0 visited=0 duration=0s)", root)
+		return results, nil
+	}
+
+	stopErr := errors.New("directory sample limit reached")
+	start := time.Now()
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	workerLimit := c.config.PxarIntraConcurrency
+	if workerLimit <= 0 {
+		workerLimit = 1
+	}
+
+	var (
+		wg           sync.WaitGroup
+		sem          = make(chan struct{}, workerLimit)
+		resMu        sync.Mutex
+		progressMu   sync.Mutex
+		errMu        sync.Mutex
+		visited      int
+		lastLog      = start
+		firstErr     error
+		limitReached bool
+	)
+
+	appendResult := func(rel string) (bool, bool) {
+		resMu.Lock()
+		defer resMu.Unlock()
+		if limitReached {
+			return false, true
+		}
+		results = append(results, filepath.ToSlash(rel))
+		if len(results) >= limit {
+			limitReached = true
+			cancel()
+			return true, true
+		}
+		return true, false
+	}
+
+	logProgress := func() {
+		progressMu.Lock()
+		defer progressMu.Unlock()
+		visited++
+		if time.Since(lastLog) > 2*time.Second {
+			resMu.Lock()
+			selected := len(results)
+			resMu.Unlock()
+			c.logger.Debug("PXAR sampleDirectories: root=%s visited=%d selected=%d", root, visited, selected)
+			lastLog = time.Now()
+		}
+	}
+
+	recordError := func(err error) {
+		errMu.Lock()
+		if firstErr == nil {
+			firstErr = err
+			cancel()
+		}
+		errMu.Unlock()
+	}
+
+	for _, startPath := range startDirs {
+		if err := ctx.Err(); err != nil {
+			break
+		}
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(startDir string) {
+			defer func() {
+				<-sem
+				wg.Done()
+			}()
+
+			walkErr := filepath.WalkDir(startDir, func(path string, d fs.DirEntry, walkErr error) error {
+				if walkErr != nil {
+					return walkErr
+				}
+
+				if err := ctx.Err(); err != nil {
+					return err
+				}
+
+				if path == root {
+					return nil
+				}
+
+				if c.shouldExclude(path) {
+					if d.IsDir() {
+						return filepath.SkipDir
+					}
+					return nil
+				}
+
+				rel, relErr := filepath.Rel(root, path)
+				if relErr != nil {
+					return relErr
+				}
+
+				if d.IsDir() {
+					logProgress()
+					depth := strings.Count(rel, string(filepath.Separator))
+					if depth >= maxDepth {
+						return filepath.SkipDir
+					}
+					if _, hitLimit := appendResult(rel); hitLimit {
+						return stopErr
+					}
+				}
+				return nil
+			})
+
+			if walkErr != nil && !errors.Is(walkErr, stopErr) && !errors.Is(walkErr, context.Canceled) {
+				recordError(walkErr)
+			}
+		}(startPath)
+	}
+
+	wg.Wait()
+
+	if firstErr != nil {
+		return results, firstErr
+	}
+	resMu.Lock()
+	limitWasReached := limitReached
+	resMu.Unlock()
+
+	if err := ctx.Err(); err != nil && !errors.Is(err, context.Canceled) && !limitWasReached {
+		return results, err
+	}
+
+	resMu.Lock()
+	selected := len(results)
+	resMu.Unlock()
+
+	progressMu.Lock()
+	totalVisited := visited
+	progressMu.Unlock()
+
 	c.logger.Debug("PXAR sampleDirectories: root=%s completed (selected=%d visited=%d duration=%s)",
-		root, len(results), visited, time.Since(start).Truncate(time.Millisecond))
+		root, selected, totalVisited, time.Since(start).Truncate(time.Millisecond))
 	return results, nil
 }
 
 func (c *Collector) sampleFiles(ctx context.Context, root string, patterns []string, maxDepth, limit int) ([]FileSummary, error) {
 	results := make([]FileSummary, 0, limit)
+	if limit <= 0 {
+		return results, nil
+	}
+
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return results, err
+	}
+
 	stopErr := errors.New("file sample limit reached")
 	start := time.Now()
-	lastLog := start
-	visited := 0
-	matched := 0
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 
-	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
+	workerLimit := c.config.PxarIntraConcurrency
+	if workerLimit <= 0 {
+		workerLimit = 1
+	}
+
+	var (
+		wg           sync.WaitGroup
+		sem          = make(chan struct{}, workerLimit)
+		resMu        sync.Mutex
+		progressMu   sync.Mutex
+		errMu        sync.Mutex
+		visited      int
+		matched      int
+		lastLog      = start
+		firstErr     error
+		limitReached bool
+	)
+
+	appendResult := func(summary FileSummary) (bool, bool) {
+		resMu.Lock()
+		defer resMu.Unlock()
+		if limitReached {
+			return false, true
 		}
-
-		if err := ctx.Err(); err != nil {
-			return err
+		results = append(results, summary)
+		if len(results) >= limit {
+			limitReached = true
+			cancel()
+			return true, true
 		}
+		return true, false
+	}
 
-		if path == root {
-			return nil
+	logProgress := func() {
+		progressMu.Lock()
+		defer progressMu.Unlock()
+		visited++
+		if time.Since(lastLog) > 2*time.Second {
+			resMu.Lock()
+			selected := len(results)
+			resMu.Unlock()
+			c.logger.Debug("PXAR sampleFiles: root=%s visited=%d matched=%d selected=%d", root, visited, matched, selected)
+			lastLog = time.Now()
 		}
+	}
 
-		if d.IsDir() {
-			if c.shouldExclude(path) {
-				return filepath.SkipDir
-			}
-			rel, err := filepath.Rel(root, path)
-			if err != nil {
-				return err
-			}
-			depth := strings.Count(rel, string(filepath.Separator))
-			if depth >= maxDepth {
-				return filepath.SkipDir
-			}
-			if time.Since(lastLog) > 2*time.Second {
-				c.logger.Debug("PXAR sampleFiles: root=%s visited=%d matched=%d selected=%d", root, visited, matched, len(results))
-				lastLog = time.Now()
-			}
-			return nil
+	incMatched := func() {
+		progressMu.Lock()
+		matched++
+		progressMu.Unlock()
+	}
+
+	recordError := func(err error) {
+		errMu.Lock()
+		if firstErr == nil {
+			firstErr = err
+			cancel()
 		}
+		errMu.Unlock()
+	}
 
+	processFile := func(path string, info fs.FileInfo) error {
 		if c.shouldExclude(path) {
 			return nil
 		}
-
 		rel, err := filepath.Rel(root, path)
 		if err != nil {
 			return err
 		}
-		visited++
+		logProgress()
 
 		if len(patterns) > 0 && !matchAnyPattern(patterns, filepath.Base(path), rel) {
 			return nil
 		}
-		matched++
+		incMatched()
 
-		info, err := d.Info()
-		if err != nil {
-			return nil
-		}
-
-		results = append(results, FileSummary{
+		summary := FileSummary{
 			RelativePath: filepath.ToSlash(rel),
 			SizeBytes:    info.Size(),
 			SizeHuman:    FormatBytes(info.Size()),
 			ModTime:      info.ModTime(),
-		})
-
-		if len(results) >= limit {
+		}
+		if _, hitLimit := appendResult(summary); hitLimit {
 			return stopErr
 		}
-
 		return nil
-	})
+	}
 
-	if err != nil && !errors.Is(err, stopErr) && !errors.Is(err, context.Canceled) {
+	limitTriggered := false
+
+	for _, entry := range entries {
+		path := filepath.Join(root, entry.Name())
+		if entry.IsDir() {
+			continue
+		}
+
+		info, infoErr := entry.Info()
+		if infoErr != nil {
+			continue
+		}
+		if err := processFile(path, info); err != nil {
+			if errors.Is(err, stopErr) {
+				limitTriggered = true
+				break
+			}
+			return results, err
+		}
+	}
+
+	if limitTriggered {
+		resMu.Lock()
+		selected := len(results)
+		resMu.Unlock()
+		progressMu.Lock()
+		totalVisited := visited
+		totalMatched := matched
+		progressMu.Unlock()
+		c.logger.Debug("PXAR sampleFiles: root=%s completed (selected=%d matched=%d visited=%d duration=%s)",
+			root, selected, totalMatched, totalVisited, time.Since(start).Truncate(time.Millisecond))
+		return results, nil
+	}
+
+	startDirs, err := c.computePxarWorkerRoots(ctx, root, "files")
+	if err != nil {
 		return results, err
 	}
 
+	if len(startDirs) == 0 {
+		resMu.Lock()
+		selected := len(results)
+		resMu.Unlock()
+		progressMu.Lock()
+		totalVisited := visited
+		totalMatched := matched
+		progressMu.Unlock()
+		c.logger.Debug("PXAR sampleFiles: root=%s completed (selected=%d matched=%d visited=%d duration=%s)",
+			root, selected, totalMatched, totalVisited, time.Since(start).Truncate(time.Millisecond))
+		return results, nil
+	}
+
+	for _, startPath := range startDirs {
+		if err := ctx.Err(); err != nil {
+			break
+		}
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(startDir string) {
+			defer func() {
+				<-sem
+				wg.Done()
+			}()
+
+			walkErr := filepath.WalkDir(startDir, func(path string, d fs.DirEntry, walkErr error) error {
+				if walkErr != nil {
+					return walkErr
+				}
+
+				if err := ctx.Err(); err != nil {
+					return err
+				}
+
+				if d.IsDir() {
+					if c.shouldExclude(path) {
+						return filepath.SkipDir
+					}
+					rel, relErr := filepath.Rel(root, path)
+					if relErr != nil {
+						return relErr
+					}
+					depth := strings.Count(rel, string(filepath.Separator))
+					if depth >= maxDepth {
+						return filepath.SkipDir
+					}
+					return nil
+				}
+
+				info, infoErr := d.Info()
+				if infoErr != nil {
+					return nil
+				}
+				return processFile(path, info)
+			})
+
+			if walkErr != nil && !errors.Is(walkErr, stopErr) && !errors.Is(walkErr, context.Canceled) {
+				recordError(walkErr)
+			}
+		}(startPath)
+	}
+
+	wg.Wait()
+
+	if firstErr != nil {
+		return results, firstErr
+	}
+
+	resMu.Lock()
+	limitWasReached := limitReached
+	selected := len(results)
+	resMu.Unlock()
+
+	if err := ctx.Err(); err != nil && !errors.Is(err, context.Canceled) && !limitWasReached {
+		return results, err
+	}
+
+	progressMu.Lock()
+	totalVisited := visited
+	totalMatched := matched
+	progressMu.Unlock()
+
 	c.logger.Debug("PXAR sampleFiles: root=%s completed (selected=%d matched=%d visited=%d duration=%s)",
-		root, len(results), matched, visited, time.Since(start).Truncate(time.Millisecond))
+		root, selected, totalMatched, totalVisited, time.Since(start).Truncate(time.Millisecond))
 	return results, nil
+}
+
+func (c *Collector) computePxarWorkerRoots(ctx context.Context, root, purpose string) ([]string, error) {
+	fanout := c.config.PxarScanFanoutLevel
+	if fanout < 1 {
+		fanout = 1
+	}
+	maxRoots := c.config.PxarScanMaxRoots
+	if maxRoots <= 0 {
+		maxRoots = 2048
+	}
+	start := time.Now()
+	c.logger.Debug("PXAR fanout enumeration (%s): root=%s fanout=%d max_roots=%d", purpose, root, fanout, maxRoots)
+
+	levels := make(map[int][]string, fanout)
+	selector := newPxarRootSelector(maxRoots)
+	queue := []string{root}
+	foundAny := false
+
+	for depth := 0; depth < fanout; depth++ {
+		if len(queue) == 0 {
+			break
+		}
+		next := make([]string, 0, len(queue))
+		for _, base := range queue {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			entries, err := os.ReadDir(base)
+			if err != nil {
+				continue
+			}
+			for _, entry := range entries {
+				if !entry.IsDir() {
+					continue
+				}
+				child := filepath.Join(base, entry.Name())
+				if c.shouldExclude(child) {
+					continue
+				}
+				foundAny = true
+				level := depth + 1
+				if level < fanout {
+					levels[level] = append(levels[level], child)
+					next = append(next, child)
+					continue
+				}
+				selector.consider(child)
+			}
+		}
+		queue = next
+	}
+
+	if !foundAny {
+		return nil, nil
+	}
+
+	roots := selector.results()
+	capped := selector.capped
+	totalCandidates := selector.total
+	if len(roots) == 0 {
+		for level := fanout - 1; level >= 1; level-- {
+			if dirs := levels[level]; len(dirs) > 0 {
+				roots = uniquePaths(dirs)
+				totalCandidates = len(dirs)
+				if maxRoots > 0 && len(roots) > maxRoots {
+					roots = downsampleRoots(roots, maxRoots)
+					capped = true
+				}
+				break
+			}
+		}
+	}
+
+	if len(roots) == 0 {
+		return nil, nil
+	}
+
+	c.logger.Debug("PXAR worker roots (%s): root=%s fanout=%d count=%d candidates=%d capped=%v duration=%s",
+		purpose,
+		root,
+		fanout,
+		len(roots),
+		totalCandidates,
+		capped,
+		time.Since(start).Truncate(time.Millisecond))
+	return roots, nil
+}
+
+func downsampleRoots(roots []string, limit int) []string {
+	if limit <= 0 || len(roots) <= limit {
+		return roots
+	}
+	step := len(roots) / limit
+	if step <= 1 {
+		return roots[:limit]
+	}
+	result := make([]string, 0, limit)
+	for i := 0; i < len(roots) && len(result) < limit; i += step {
+		result = append(result, roots[i])
+	}
+	if len(result) < limit {
+		for i := len(roots) - 1; i >= 0 && len(result) < limit; i-- {
+			result = append(result, roots[i])
+		}
+	}
+	if len(result) > limit {
+		result = result[:limit]
+	}
+	return result
+}
+
+type pxarRootCandidate struct {
+	path   string
+	weight uint32
+}
+
+type pxarRootSelector struct {
+	limit     int
+	items     []pxarRootCandidate
+	total     int
+	capped    bool
+	maxIdx    int
+	maxWeight uint32
+}
+
+func newPxarRootSelector(limit int) *pxarRootSelector {
+	return &pxarRootSelector{
+		limit:  limit,
+		maxIdx: -1,
+	}
+}
+
+func (s *pxarRootSelector) consider(path string) {
+	s.total++
+	if s.limit <= 0 {
+		s.items = append(s.items, pxarRootCandidate{path: path})
+		return
+	}
+	weight := hashPath(path)
+	if len(s.items) < s.limit {
+		s.items = append(s.items, pxarRootCandidate{path: path, weight: weight})
+		if weight > s.maxWeight || s.maxIdx == -1 {
+			s.maxWeight = weight
+			s.maxIdx = len(s.items) - 1
+		}
+		return
+	}
+	s.capped = true
+	if weight >= s.maxWeight {
+		return
+	}
+	s.items[s.maxIdx] = pxarRootCandidate{path: path, weight: weight}
+	s.recomputeMax()
+}
+
+func (s *pxarRootSelector) recomputeMax() {
+	if len(s.items) == 0 {
+		s.maxIdx = -1
+		s.maxWeight = 0
+		return
+	}
+	maxIdx := 0
+	maxWeight := s.items[0].weight
+	for i := 1; i < len(s.items); i++ {
+		if s.items[i].weight > maxWeight {
+			maxWeight = s.items[i].weight
+			maxIdx = i
+		}
+	}
+	s.maxIdx = maxIdx
+	s.maxWeight = maxWeight
+}
+
+func (s *pxarRootSelector) results() []string {
+	if len(s.items) == 0 {
+		return nil
+	}
+	roots := make([]string, len(s.items))
+	for i, item := range s.items {
+		roots[i] = item.path
+	}
+	return uniquePaths(roots)
+}
+
+func hashPath(path string) uint32 {
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(path))
+	return h.Sum32()
+}
+
+func uniquePaths(paths []string) []string {
+	if len(paths) == 0 {
+		return paths
+	}
+	seen := make(map[string]struct{}, len(paths))
+	unique := make([]string, 0, len(paths))
+	for _, path := range paths {
+		if _, ok := seen[path]; ok {
+			continue
+		}
+		seen[path] = struct{}{}
+		unique = append(unique, path)
+	}
+	return unique
 }
 
 func matchAnyPattern(patterns []string, name, relative string) bool {

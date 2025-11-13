@@ -53,11 +53,11 @@ func CheckTelegramRegistration(ctx context.Context, serverAPIHost, serverID stri
 	case 200:
 		return TelegramRegistrationStatus{Code: 200, Message: "200 - Registration active"}
 	case 403:
-		return TelegramRegistrationStatus{Code: 403, Message: "403 - Start the bot and send the Server ID", Error: fmt.Errorf(string(body))}
+		return TelegramRegistrationStatus{Code: 403, Message: "403 - Start the bot and send the Server ID", Error: fmt.Errorf("%s", body)}
 	case 409:
-		return TelegramRegistrationStatus{Code: 409, Message: "409 - Registration missing on the bot", Error: fmt.Errorf(string(body))}
+		return TelegramRegistrationStatus{Code: 409, Message: "409 - Registration missing on the bot", Error: fmt.Errorf("%s", body)}
 	case 422:
-		return TelegramRegistrationStatus{Code: 422, Message: "422 - Invalid Server ID", Error: fmt.Errorf(string(body))}
+		return TelegramRegistrationStatus{Code: 422, Message: "422 - Invalid Server ID", Error: fmt.Errorf("%s", body)}
 	default:
 		return TelegramRegistrationStatus{
 			Code:    resp.StatusCode,

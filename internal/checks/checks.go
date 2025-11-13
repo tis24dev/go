@@ -149,14 +149,14 @@ func (c *Checker) CheckDiskSpace() CheckResult {
 		if err := c.checkSingleDisk(entry.label, entry.path, entry.min); err != nil {
 			result.Error = err
 			result.Message = err.Error()
-			c.logger.Error(result.Message)
+			c.logger.Error("%s", result.Message)
 			return result
 		}
 	}
 
 	result.Passed = true
 	result.Message = "Sufficient disk space on all configured destinations"
-	c.logger.Debug(result.Message)
+	c.logger.Debug("%s", result.Message)
 	return result
 }
 
@@ -193,7 +193,7 @@ func (c *Checker) CheckLockFile() CheckResult {
 			}
 		} else {
 			result.Message = fmt.Sprintf("Another backup is in progress (lock age: %v)", age)
-			c.logger.Error(result.Message)
+			c.logger.Error("%s", result.Message)
 			return result
 		}
 	}
@@ -204,7 +204,7 @@ func (c *Checker) CheckLockFile() CheckResult {
 		if err != nil {
 			if os.IsExist(err) {
 				result.Message = "Another backup acquired the lock"
-				c.logger.Error(result.Message)
+				c.logger.Error("%s", result.Message)
 				return result
 			}
 			result.Error = fmt.Errorf("failed to create lock file: %w", err)
@@ -229,7 +229,7 @@ func (c *Checker) CheckLockFile() CheckResult {
 
 	result.Passed = true
 	result.Message = "Lock file acquired successfully"
-	c.logger.Debug(result.Message)
+	c.logger.Debug("%s", result.Message)
 	return result
 }
 
@@ -255,7 +255,7 @@ func (c *Checker) CheckPermissions() CheckResult {
 		if err != nil {
 			result.Error = fmt.Errorf("no write permission in %s: %w", dir, err)
 			result.Message = result.Error.Error()
-			c.logger.Error(result.Message)
+			c.logger.Error("%s", result.Message)
 			return result
 		}
 		f.Close()
@@ -268,7 +268,7 @@ func (c *Checker) CheckPermissions() CheckResult {
 
 	result.Passed = true
 	result.Message = "All directories are writable"
-	c.logger.Debug(result.Message)
+	c.logger.Debug("%s", result.Message)
 	return result
 }
 
@@ -305,7 +305,7 @@ func (c *Checker) CheckDirectories() CheckResult {
 			if !info.IsDir() {
 				result.Error = fmt.Errorf("required path is not a directory: %s", dir)
 				result.Message = result.Error.Error()
-				c.logger.Error(result.Message)
+				c.logger.Error("%s", result.Message)
 				return result
 			}
 			continue
@@ -314,7 +314,7 @@ func (c *Checker) CheckDirectories() CheckResult {
 		if !os.IsNotExist(err) {
 			result.Error = fmt.Errorf("failed to stat directory %s: %w", dir, err)
 			result.Message = result.Error.Error()
-			c.logger.Error(result.Message)
+			c.logger.Error("%s", result.Message)
 			return result
 		}
 
@@ -326,7 +326,7 @@ func (c *Checker) CheckDirectories() CheckResult {
 		if err := os.MkdirAll(dir, 0755); err != nil {
 			result.Error = fmt.Errorf("failed to create directory %s: %w", dir, err)
 			result.Message = result.Error.Error()
-			c.logger.Error(result.Message)
+			c.logger.Error("%s", result.Message)
 			return result
 		}
 		c.logger.Info("Created missing directory: %s", dir)
@@ -334,7 +334,7 @@ func (c *Checker) CheckDirectories() CheckResult {
 
 	result.Passed = true
 	result.Message = "All required directories exist"
-	c.logger.Debug(result.Message)
+	c.logger.Debug("%s", result.Message)
 	return result
 }
 
@@ -413,8 +413,8 @@ func (c *Checker) CheckDiskSpaceForEstimate(estimatedSizeGB float64) CheckResult
 			msg := fmt.Sprintf("%s disk space insufficient on %s: %.2f GB available, %.2f GB required (max of %.2f GB min, %.2f GB estimated × %.1fx)",
 				entry.label, entry.path, availableGB, requiredGB, entry.min, estimatedSizeGB, c.config.SafetyFactor)
 			result.Message = msg
-			result.Error = fmt.Errorf(msg)
-			c.logger.Error(result.Message)
+			result.Error = fmt.Errorf("%s", msg)
+			c.logger.Error("%s", result.Message)
 			return result
 		}
 	}
@@ -422,7 +422,7 @@ func (c *Checker) CheckDiskSpaceForEstimate(estimatedSizeGB float64) CheckResult
 	result.Passed = true
 	result.Message = fmt.Sprintf("Sufficient disk space for estimated %.2f GB (safety factor %.1fx) on all destinations",
 		estimatedSizeGB, c.config.SafetyFactor)
-	c.logger.Debug(result.Message)
+	c.logger.Debug("%s", result.Message)
 	return result
 }
 

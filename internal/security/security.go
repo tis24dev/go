@@ -84,6 +84,7 @@ type Checker struct {
 	execPath   string
 	envInfo    *environment.EnvironmentInfo
 	result     *Result
+	lookPath   func(string) (string, error)
 }
 
 type dependencyEntry struct {
@@ -114,6 +115,7 @@ func Run(ctx context.Context, logger *logging.Logger, cfg *config.Config, config
 		execPath:   execPath,
 		envInfo:    envInfo,
 		result:     &Result{},
+		lookPath:   exec.LookPath,
 	}
 
 	logger.Info("Running security preflight checks...")
@@ -138,12 +140,13 @@ func Run(ctx context.Context, logger *logging.Logger, cfg *config.Config, config
 
 	checker.checkSuspiciousProcesses(ctx)
 
-	totalIssues := checker.result.TotalIssues()
+	warnings := checker.result.WarningCount()
+	errorsCount := checker.result.ErrorCount()
 	logger.Info("Security checks completed: %d warning(s), %d error(s)",
-		checker.result.WarningCount(), checker.result.ErrorCount())
+		warnings, errorsCount)
 
-	if !cfg.ContinueOnSecurityIssues && totalIssues > 0 {
-		return checker.result, fmt.Errorf("security checks reported %d issue(s); set CONTINUE_ON_SECURITY_ISSUES=true to bypass", totalIssues)
+	if !cfg.ContinueOnSecurityIssues && errorsCount > 0 {
+		return checker.result, fmt.Errorf("security checks reported %d error(s); set CONTINUE_ON_SECURITY_ISSUES=true to bypass", errorsCount)
 	}
 
 	return checker.result, nil
@@ -188,6 +191,9 @@ func (c *Checker) checkDependencies() {
 				names[i] = dep.Name
 			}
 			c.logger.Info("Dependencies check completed: all required dependencies available (optional missing: %s)", strings.Join(names, ", "))
+			for _, dep := range optionalMissing {
+				c.addWarning("Optional dependency %s missing: %s", dep.Name, dep.Reason)
+			}
 		} else {
 			c.logger.Info("Dependencies check completed: all required dependencies available")
 		}
@@ -197,6 +203,7 @@ func (c *Checker) checkDependencies() {
 	c.logger.Warning("Dependencies check: missing required dependencies")
 	for _, dep := range missing {
 		c.logger.Warning(" - %s (%s)", dep.Name, dep.Reason)
+		c.addError("Required dependency %s missing: %s", dep.Name, dep.Reason)
 	}
 }
 
@@ -268,8 +275,12 @@ func (c *Checker) binaryDependency(name string, binaries []string, required bool
 		Required: required,
 		Reason:   reason,
 		Check: func() (bool, string) {
+			lookPath := c.lookPath
+			if lookPath == nil {
+				lookPath = exec.LookPath
+			}
 			for _, binary := range binaries {
-				if path, err := exec.LookPath(binary); err == nil {
+				if path, err := lookPath(binary); err == nil {
 					return true, fmt.Sprintf("%s at %s", binary, path)
 				}
 			}
@@ -280,13 +291,13 @@ func (c *Checker) binaryDependency(name string, binaries []string, required bool
 
 func (c *Checker) addWarning(format string, args ...interface{}) {
 	msg := fmt.Sprintf(format, args...)
-	c.logger.Warning(msg)
+	c.logger.Warning("%s", msg)
 	c.result.add(severityWarning, msg)
 }
 
 func (c *Checker) addError(format string, args ...interface{}) {
 	msg := fmt.Sprintf(format, args...)
-	c.logger.Error(msg)
+	c.logger.Error("%s", msg)
 	c.result.add(severityError, msg)
 }
 

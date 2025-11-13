@@ -2,7 +2,7 @@
 
 > Enterprise-grade backup system for Proxmox VE/PBS, reimplemented in Go.
 
-[![Go Version](https://img.shields.io/badge/Go-1.21+-00ADD8?style=flat&logo=go)](https://go.dev)
+[![Go Version](https://img.shields.io/badge/Go-1.25+-00ADD8?style=flat&logo=go)](https://go.dev)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Status](https://img.shields.io/badge/Status-In%20Development-yellow.svg)]()
 
@@ -51,7 +51,7 @@ See [MIGRATION_PLAN.md](MIGRATION_PLAN.md) for the complete migration roadmap.
 
 ### Prerequisites
 
-- Go 1.21 or higher
+- Go 1.25 or higher
 - Proxmox VE or Proxmox Backup Server
 - Linux system (tested on Debian/Ubuntu)
 
@@ -428,6 +428,21 @@ During migration, both versions can run simultaneously:
 # Development (Go)
 /opt/proxmox-backup/build/proxmox-backup
 ```
+
+### Coverage Guard
+
+Use the built-in coverage gate to prevent regressions:
+
+```bash
+# Default threshold: 50%
+make coverage-check
+
+# Hardened threshold (e.g. CI)
+make coverage-check COVERAGE_THRESHOLD=70
+```
+
+The target runs `go test` with `-coverpkg=./...` and fails if total coverage
+falls below the requested threshold.
 
 ---
 

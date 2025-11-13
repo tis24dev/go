@@ -52,7 +52,7 @@ make help
 
 ## Completed Tasks (Phase 0)
 
-- ✅ Go 1.19.8 installed
+- ✅ Go 1.25+ installed
 - ✅ Directory `/opt/proxmox-backup-go/` created
 - ✅ Go module initialized: `github.com/tis24dev/proxmox-backup`
 - ✅ Directory structure created (cmd/, internal/, pkg/, test/)

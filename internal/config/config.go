@@ -14,18 +14,19 @@ import (
 
 // Config contiene tutta la configurazione del sistema di backup
 type Config struct {
-	// General settings
-	BackupEnabled            bool
-	DebugLevel               types.LogLevel
-	UseColor                 bool
-	ColorizeStepLogs         bool
-	EnableGoBackup           bool
-	BaseDir                  string
-	SecurityCheckEnabled     bool
-	AbortOnSecurityIssues    bool
-	AutoUpdateHashes         bool
-	AutoFixPermissions       bool
-	ContinueOnSecurityIssues bool
+    // General settings
+    BackupEnabled            bool
+    DebugLevel               types.LogLevel
+    UseColor                 bool
+    ColorizeStepLogs         bool
+    EnableGoBackup           bool
+    BaseDir                  string
+    DisableNetworkPreflight  bool
+    SecurityCheckEnabled     bool
+    AbortOnSecurityIssues    bool
+    AutoUpdateHashes         bool
+    AutoFixPermissions       bool
+    ContinueOnSecurityIssues bool
 	SuspiciousProcesses      []string
 	SafeBracketProcesses     []string
 
@@ -149,16 +150,18 @@ type Config struct {
 	BackupCephConfig     bool
 
 	// PBS-specific collection options
-	BackupDatastoreConfigs bool
-	BackupUserConfigs      bool
-	BackupRemoteConfigs    bool
-	BackupSyncJobs         bool
-	BackupVerificationJobs bool
-	BackupTapeConfigs      bool
-	BackupPruneSchedules   bool
-	BackupPxarFiles        bool
+	BackupDatastoreConfigs   bool
+	BackupUserConfigs        bool
+	BackupRemoteConfigs      bool
+	BackupSyncJobs           bool
+	BackupVerificationJobs   bool
+	BackupTapeConfigs        bool
+	BackupPruneSchedules     bool
+	BackupPxarFiles          bool
 	PxarDatastoreConcurrency int
 	PxarIntraConcurrency     int
+	PxarScanFanoutLevel      int
+	PxarScanMaxRoots         int
 
 	// System collection options
 	BackupNetworkConfigs    bool
@@ -302,8 +305,10 @@ func (c *Config) parse() error {
 	c.MinDiskSecondaryGB = sanitizeMinDisk(c.getFloat("MIN_DISK_SPACE_SECONDARY_GB", c.MinDiskPrimaryGB))
 	c.MinDiskCloudGB = sanitizeMinDisk(c.getFloat("MIN_DISK_SPACE_CLOUD_GB", c.MinDiskPrimaryGB))
 
-	// Feature flags
-	c.EnableGoBackup = c.getBoolWithFallback([]string{"ENABLE_GO_BACKUP", "ENABLE_GO_PIPELINE"}, true)
+    // Feature flags
+    c.EnableGoBackup = c.getBoolWithFallback([]string{"ENABLE_GO_BACKUP", "ENABLE_GO_PIPELINE"}, true)
+    // Preflight controls
+    c.DisableNetworkPreflight = c.getBool("DISABLE_NETWORK_PREFLIGHT", false)
 
 	// Base directory (compatibile con lo script Bash: se non specificato, usa env o default)
 	envBaseDir := os.Getenv("BASE_DIR")
@@ -468,6 +473,8 @@ func (c *Config) parse() error {
 	c.BackupPxarFiles = c.getBool("BACKUP_PXAR_FILES", true)
 	c.PxarDatastoreConcurrency = c.getInt("PXAR_SCAN_DS_CONCURRENCY", 3)
 	c.PxarIntraConcurrency = c.getInt("PXAR_SCAN_INTRA_CONCURRENCY", 4)
+	c.PxarScanFanoutLevel = c.getInt("PXAR_SCAN_FANOUT_LEVEL", 2)
+	c.PxarScanMaxRoots = c.getInt("PXAR_SCAN_MAX_ROOTS", 2048)
 
 	// System collection options
 	c.BackupNetworkConfigs = c.getBool("BACKUP_NETWORK_CONFIGS", true)

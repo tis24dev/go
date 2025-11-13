@@ -368,6 +368,7 @@ func TestGetStats(t *testing.T) {
 	collector.ensureDir(testDir)
 
 	// Check stats updated
+	stats = collector.GetStats()
 	if stats.DirsCreated != 1 {
 		t.Errorf("Expected DirsCreated=1, got %d", stats.DirsCreated)
 	}

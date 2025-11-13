@@ -20,17 +20,23 @@ import (
 // All errors from cloud storage are NON-FATAL - they log warnings but don't abort the backup
 // Uses comprehensible timeout names: CONNECTION (for remote check) and OPERATION (for upload/download)
 type CloudStorage struct {
-	config *config.Config
-	logger *logging.Logger
-	remote string
+	config      *config.Config
+	logger      *logging.Logger
+	remote      string
+	execCommand func(ctx context.Context, name string, args ...string) ([]byte, error)
+	lookPath    func(string) (string, error)
+	sleep       func(time.Duration)
 }
 
 // NewCloudStorage creates a new cloud storage instance
 func NewCloudStorage(cfg *config.Config, logger *logging.Logger) (*CloudStorage, error) {
 	return &CloudStorage{
-		config: cfg,
-		logger: logger,
-		remote: cfg.CloudRemote,
+		config:      cfg,
+		logger:      logger,
+		remote:      cfg.CloudRemote,
+		execCommand: defaultExecCommand,
+		lookPath:    exec.LookPath,
+		sleep:       time.Sleep,
 	}, nil
 }
 
@@ -106,7 +112,11 @@ func (c *CloudStorage) DetectFilesystem(ctx context.Context) (*FilesystemInfo, e
 
 // hasRclone checks if rclone command is available
 func (c *CloudStorage) hasRclone() bool {
-	_, err := exec.LookPath("rclone")
+	lookPath := c.lookPath
+	if lookPath == nil {
+		lookPath = exec.LookPath
+	}
+	_, err := lookPath("rclone")
 	return err == nil
 }
 
@@ -122,8 +132,7 @@ func (c *CloudStorage) checkRemoteAccessible(ctx context.Context) error {
 
 	c.logger.Debug("Running: %s", strings.Join(args, " "))
 
-	cmd := exec.CommandContext(timeoutCtx, args[0], args[1:]...)
-	output, err := cmd.CombinedOutput()
+	output, err := c.exec(timeoutCtx, args[0], args[1:]...)
 
 	if err != nil {
 		if timeoutCtx.Err() == context.DeadlineExceeded {
@@ -175,10 +184,10 @@ func (c *CloudStorage) Store(ctx context.Context, backupFile string, metadata *t
 	defer cancel()
 
 	// Upload using rclone with retries
-    if err := c.uploadWithRetry(uploadCtx, backupFile, remoteFile); err != nil {
-        c.logger.Warning("WARNING: Cloud Storage: File upload failed for %s: %v", filename, err)
-        c.logger.Warning("WARNING: Cloud Storage: Backup not saved to %s", c.remote)
-        return &StorageError{
+	if err := c.uploadWithRetry(uploadCtx, backupFile, remoteFile); err != nil {
+		c.logger.Warning("WARNING: Cloud Storage: File upload failed for %s: %v", filename, err)
+		c.logger.Warning("WARNING: Cloud Storage: Backup not saved to %s", c.remote)
+		return &StorageError{
 			Location:    LocationCloud,
 			Operation:   "upload",
 			Path:        backupFile,
@@ -189,12 +198,12 @@ func (c *CloudStorage) Store(ctx context.Context, backupFile string, metadata *t
 	}
 
 	// Verify upload
-    c.logger.Info("Verifying cloud upload: %s", filename)
-    verified, err := c.VerifyUpload(ctx, backupFile, remoteFile)
-    if err != nil || !verified {
-        c.logger.Warning("WARNING: Cloud Storage: Upload verification failed for %s: %v", filename, err)
-        c.logger.Warning("WARNING: File was uploaded but could not be verified - it may be corrupt")
-        return &StorageError{
+	c.logger.Info("Verifying cloud upload: %s", filename)
+	verified, err := c.VerifyUpload(ctx, backupFile, remoteFile)
+	if err != nil || !verified {
+		c.logger.Warning("WARNING: Cloud Storage: Upload verification failed for %s: %v", filename, err)
+		c.logger.Warning("WARNING: File was uploaded but could not be verified - it may be corrupt")
+		return &StorageError{
 			Location:    LocationCloud,
 			Operation:   "verify",
 			Path:        backupFile,
@@ -221,11 +230,11 @@ func (c *CloudStorage) Store(ctx context.Context, backupFile string, metadata *t
 			uploadCtx2, cancel2 := context.WithTimeout(ctx, time.Duration(c.config.RcloneTimeoutOperation)*time.Second)
 			defer cancel2()
 
-            if err := c.uploadWithRetry(uploadCtx2, srcFile, remoteAssocFile); err != nil {
-                c.logger.Warning("WARNING: Cloud Storage: Failed to upload associated file %s: %v",
-                    filepath.Base(srcFile), err)
-                // Continue with other files
-            }
+			if err := c.uploadWithRetry(uploadCtx2, srcFile, remoteAssocFile); err != nil {
+				c.logger.Warning("WARNING: Cloud Storage: Failed to upload associated file %s: %v",
+					filepath.Base(srcFile), err)
+				// Continue with other files
+			}
 		}
 	} else {
 		// Upload bundle file
@@ -235,14 +244,14 @@ func (c *CloudStorage) Store(ctx context.Context, backupFile string, metadata *t
 			uploadCtx3, cancel3 := context.WithTimeout(ctx, time.Duration(c.config.RcloneTimeoutOperation)*time.Second)
 			defer cancel3()
 
-            if err := c.uploadWithRetry(uploadCtx3, bundleFile, remoteBundle); err != nil {
-                c.logger.Warning("WARNING: Cloud Storage: Failed to upload bundle %s: %v",
-                    filepath.Base(bundleFile), err)
-            }
-        }
-    }
+			if err := c.uploadWithRetry(uploadCtx3, bundleFile, remoteBundle); err != nil {
+				c.logger.Warning("WARNING: Cloud Storage: Failed to upload bundle %s: %v",
+					filepath.Base(bundleFile), err)
+			}
+		}
+	}
 
-    c.logger.Debug("✓ Cloud Storage: File uploaded")
+	c.logger.Debug("✓ Cloud Storage: File uploaded")
 
 	if count := c.countBackups(ctx); count >= 0 {
 		c.logger.Debug("Cloud storage: current backups detected after upload: %d", count)
@@ -307,7 +316,7 @@ func (c *CloudStorage) uploadWithRetry(ctx context.Context, localFile, remoteFil
 		if attempt < c.config.RcloneRetries {
 			waitTime := time.Duration(attempt*2) * time.Second
 			c.logger.Debug("Waiting %v before retry...", waitTime)
-			time.Sleep(waitTime)
+			c.sleep(waitTime)
 		}
 	}
 
@@ -344,8 +353,7 @@ func (c *CloudStorage) rcloneCopy(ctx context.Context, localFile, remoteFile str
 
 	c.logger.Debug("Running: %s", strings.Join(args, " "))
 
-	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
-	output, err := cmd.CombinedOutput()
+	output, err := c.exec(ctx, args[0], args[1:]...)
 
 	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
@@ -383,8 +391,7 @@ func (c *CloudStorage) verifyPrimary(ctx context.Context, remoteFile string, exp
 
 	c.logger.Debug("Verification (primary): %s", strings.Join(args, " "))
 
-	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
-	output, err := cmd.CombinedOutput()
+	output, err := c.exec(ctx, args[0], args[1:]...)
 
 	if err != nil {
 		c.logger.Debug("Primary verification failed, trying alternative method: %v", err)
@@ -425,8 +432,7 @@ func (c *CloudStorage) verifyAlternative(ctx context.Context, remoteFile string,
 
 	c.logger.Debug("Verification (alternative): %s | grep %s", strings.Join(args, " "), filename)
 
-	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
-	output, err := cmd.CombinedOutput()
+	output, err := c.exec(ctx, args[0], args[1:]...)
 
 	if err != nil {
 		return false, fmt.Errorf("rclone ls failed: %w: %s", err, strings.TrimSpace(string(output)))
@@ -477,8 +483,7 @@ func (c *CloudStorage) List(ctx context.Context) ([]*types.BackupMetadata, error
 	// List files in remote
 	args := []string{"rclone", "lsl", c.remote + ":"}
 
-	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
-	output, err := cmd.CombinedOutput()
+	output, err := c.exec(ctx, args[0], args[1:]...)
 
 	if err != nil {
 		c.logger.Warning("WARNING: Cloud storage - failed to list backups: %v", err)
@@ -586,8 +591,7 @@ func (c *CloudStorage) Delete(ctx context.Context, backupFile string) error {
 
 		c.logger.Debug("Running: %s", strings.Join(args, " "))
 
-		cmd := exec.CommandContext(ctx, args[0], args[1:]...)
-		output, err := cmd.CombinedOutput()
+		output, err := c.exec(ctx, args[0], args[1:]...)
 
 		if err != nil {
 			c.logger.Warning("WARNING: Cloud storage - failed to delete %s: %v: %s",
@@ -668,7 +672,7 @@ func (c *CloudStorage) ApplyRetention(ctx context.Context, maxBackups int) (int,
 			c.logger.Debug("Batch of %d deletions completed, pausing for %v to avoid API rate limits",
 				batchSize,
 				batchPause)
-			time.Sleep(batchPause)
+			c.sleep(batchPause)
 		}
 	}
 
@@ -719,4 +723,16 @@ func (c *CloudStorage) GetStats(ctx context.Context) (*StorageStats, error) {
 	stats.NewestBackup = newest
 
 	return stats, nil
+}
+
+func (c *CloudStorage) exec(ctx context.Context, name string, args ...string) ([]byte, error) {
+	if c.execCommand != nil {
+		return c.execCommand(ctx, name, args...)
+	}
+	return defaultExecCommand(ctx, name, args...)
+}
+
+func defaultExecCommand(ctx context.Context, name string, args ...string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, name, args...)
+	return cmd.CombinedOutput()
 }

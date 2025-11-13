@@ -1,32 +1,35 @@
 package main
 
 import (
-	"context"
-	"errors"
-	"fmt"
-	"os"
-	"os/exec"
-	"os/signal"
-	"path/filepath"
-	"runtime/debug"
-	"strings"
-	"sync"
-	"syscall"
-	"time"
+    "context"
+    "errors"
+    "fmt"
+    "net"
+    "os"
+    "os/exec"
+    "os/signal"
+    "path/filepath"
+    "runtime/debug"
+    "runtime"
+    "strconv"
+    "strings"
+    "sync"
+    "syscall"
+    "time"
 
-	"github.com/tis24dev/proxmox-backup/internal/backup"
-	"github.com/tis24dev/proxmox-backup/internal/checks"
-	"github.com/tis24dev/proxmox-backup/internal/cli"
-	"github.com/tis24dev/proxmox-backup/internal/config"
-	"github.com/tis24dev/proxmox-backup/internal/environment"
-	"github.com/tis24dev/proxmox-backup/internal/identity"
-	"github.com/tis24dev/proxmox-backup/internal/logging"
-	"github.com/tis24dev/proxmox-backup/internal/notify"
-	"github.com/tis24dev/proxmox-backup/internal/orchestrator"
-	"github.com/tis24dev/proxmox-backup/internal/security"
-	"github.com/tis24dev/proxmox-backup/internal/storage"
-	"github.com/tis24dev/proxmox-backup/internal/types"
-	"github.com/tis24dev/proxmox-backup/pkg/utils"
+    "github.com/tis24dev/proxmox-backup/internal/backup"
+    "github.com/tis24dev/proxmox-backup/internal/checks"
+    "github.com/tis24dev/proxmox-backup/internal/cli"
+    "github.com/tis24dev/proxmox-backup/internal/config"
+    "github.com/tis24dev/proxmox-backup/internal/environment"
+    "github.com/tis24dev/proxmox-backup/internal/identity"
+    "github.com/tis24dev/proxmox-backup/internal/logging"
+    "github.com/tis24dev/proxmox-backup/internal/notify"
+    "github.com/tis24dev/proxmox-backup/internal/orchestrator"
+    "github.com/tis24dev/proxmox-backup/internal/security"
+    "github.com/tis24dev/proxmox-backup/internal/storage"
+    "github.com/tis24dev/proxmox-backup/internal/types"
+    "github.com/tis24dev/proxmox-backup/pkg/utils"
 )
 
 const (
@@ -40,7 +43,7 @@ func main() {
 var closeStdinOnce sync.Once
 
 func run() int {
-	bootstrap := logging.NewBootstrapLogger()
+    bootstrap := logging.NewBootstrapLogger()
 
 	defer func() {
 		if r := recover(); r != nil {
@@ -69,8 +72,8 @@ func run() int {
 		})
 	}()
 
-	// Parse command-line arguments
-	args := cli.Parse()
+    // Parse command-line arguments
+    args := cli.Parse()
 
 	// Handle version flag
 	if args.ShowVersion {
@@ -84,13 +87,19 @@ func run() int {
 		return types.ExitSuccess.Int()
 	}
 
-	// Print header
-	bootstrap.Println("===========================================")
-	bootstrap.Println("  Proxmox Backup - Go Version")
-	bootstrap.Printf("  Version: %s", version)
-	bootstrap.Println("  Phase: 5.1 - Notifications")
-	bootstrap.Println("===========================================")
-	bootstrap.Println("")
+    // Pre-flight: enforce Go runtime version
+    if err := checkGoRuntimeVersion("1.25.4"); err != nil {
+        bootstrap.Error("ERROR: %v", err)
+        return types.ExitEnvironmentError.Int()
+    }
+
+    // Print header
+    bootstrap.Println("===========================================")
+    bootstrap.Println("  Proxmox Backup - Go Version")
+    bootstrap.Printf("  Version: %s", version)
+    bootstrap.Println("  Phase: 5.1 - Notifications")
+    bootstrap.Println("===========================================")
+    bootstrap.Println("")
 
 	// Detect Proxmox environment
 	bootstrap.Println("Detecting Proxmox environment...")
@@ -112,23 +121,35 @@ func run() int {
 	if initialEnvBaseDir == "" {
 		_ = os.Setenv("BASE_DIR", autoBaseDir)
 	}
-	bootstrap.Printf("Loading configuration from: %s", args.ConfigPath)
-	cfg, err := config.LoadConfig(args.ConfigPath)
-	if err != nil {
-		bootstrap.Error("ERROR: Failed to load configuration: %v", err)
-		return types.ExitConfigError.Int()
-	}
+    bootstrap.Printf("Loading configuration from: %s", args.ConfigPath)
+    cfg, err := config.LoadConfig(args.ConfigPath)
+    if err != nil {
+        bootstrap.Error("ERROR: Failed to load configuration: %v", err)
+        return types.ExitConfigError.Int()
+    }
 	if cfg.BaseDir == "" {
 		cfg.BaseDir = autoBaseDir
 	}
 	_ = os.Setenv("BASE_DIR", cfg.BaseDir)
 	bootstrap.Println("✓ Configuration loaded successfully")
-	bootstrap.Println("")
+    bootstrap.Println("")
 
-	if err := validateFutureFeatures(cfg); err != nil {
-		bootstrap.Error("ERROR: Invalid configuration: %v", err)
-		return types.ExitConfigError.Int()
-	}
+    if err := validateFutureFeatures(cfg); err != nil {
+        bootstrap.Error("ERROR: Invalid configuration: %v", err)
+        return types.ExitConfigError.Int()
+    }
+
+    // Pre-flight: if features require network, verify basic connectivity
+    if needs, reasons := featuresNeedNetwork(cfg); needs {
+        if cfg.DisableNetworkPreflight {
+            logging.Warning("WARNING: Network preflight disabled via DISABLE_NETWORK_PREFLIGHT; features: %s", strings.Join(reasons, ", "))
+        } else {
+            if err := checkInternetConnectivity(2 * time.Second); err != nil {
+                bootstrap.Error("ERROR: Network connectivity required for: %s. %v", strings.Join(reasons, ", "), err)
+                return types.ExitNetworkError.Int()
+            }
+        }
+    }
 
 	// Determine log level (CLI overrides config)
 	logLevel := cfg.DebugLevel
@@ -393,7 +414,7 @@ func run() int {
 	localAdapter.SetFilesystemInfo(localFS)
 	localAdapter.SetInitialStats(localStats)
 	orch.RegisterStorageTarget(localAdapter)
-	logging.Info(formatStorageInitSummary("Local storage", cfg.MaxLocalBackups, localStats))
+	logging.Info("%s", formatStorageInitSummary("Local storage", cfg.MaxLocalBackups, localStats))
 
 	// Secondary storage - optional
 	var secondaryFS *storage.FilesystemInfo
@@ -410,7 +431,7 @@ func run() int {
 			secondaryAdapter.SetFilesystemInfo(secondaryFS)
 			secondaryAdapter.SetInitialStats(secondaryStats)
 			orch.RegisterStorageTarget(secondaryAdapter)
-			logging.Info(formatStorageInitSummary("Secondary storage", cfg.MaxSecondaryBackups, secondaryStats))
+			logging.Info("%s", formatStorageInitSummary("Secondary storage", cfg.MaxSecondaryBackups, secondaryStats))
 		}
 	} else {
 		logging.Info("Path Secondary: disabled")
@@ -431,7 +452,7 @@ func run() int {
 			cloudAdapter.SetFilesystemInfo(cloudFS)
 			cloudAdapter.SetInitialStats(cloudStats)
 			orch.RegisterStorageTarget(cloudAdapter)
-			logging.Info(formatStorageInitSummary("Cloud storage", cfg.MaxCloudBackups, cloudStats))
+			logging.Info("%s", formatStorageInitSummary("Cloud storage", cfg.MaxCloudBackups, cloudStats))
 		}
 	} else {
 		logging.Info("Path Cloud: disabled")
@@ -723,6 +744,82 @@ func run() int {
 	fmt.Println()
 
 	return types.ExitSuccess.Int()
+}
+
+// checkGoRuntimeVersion ensures the running binary was built with at least the specified Go version (semver: major.minor.patch).
+func checkGoRuntimeVersion(min string) error {
+    rt := runtime.Version() // e.g., "go1.25.4"
+    // Normalize versions to x.y.z
+    parse := func(v string) (int, int, int) {
+        // Accept forms: go1.25.4, go1.25, 1.25.4, 1.25
+        v = strings.TrimPrefix(v, "go")
+        parts := strings.Split(v, ".")
+        toInt := func(s string) int { n, _ := strconv.Atoi(s); return n }
+        major, minor, patch := 0, 0, 0
+        if len(parts) > 0 { major = toInt(parts[0]) }
+        if len(parts) > 1 { minor = toInt(parts[1]) }
+        if len(parts) > 2 { patch = toInt(parts[2]) }
+        return major, minor, patch
+    }
+
+    rtMaj, rtMin, rtPatch := parse(rt)
+    minMaj, minMin, minPatch := parse(min)
+
+    newer := func(aMaj, aMin, aPatch, bMaj, bMin, bPatch int) bool {
+        if aMaj != bMaj { return aMaj > bMaj }
+        if aMin != bMin { return aMin > bMin }
+        return aPatch >= bPatch
+    }
+
+    if !newer(rtMaj, rtMin, rtPatch, minMaj, minMin, minPatch) {
+        return fmt.Errorf("Go runtime version %s is below required %s — rebuild with Go %s or set GOTOOLCHAIN=auto", rt, "go"+min, "go"+min)
+    }
+    return nil
+}
+
+// featuresNeedNetwork returns whether current configuration requires outbound network, and human reasons.
+func featuresNeedNetwork(cfg *config.Config) (bool, []string) {
+    reasons := []string{}
+    // Telegram (any mode uses network)
+    if cfg.TelegramEnabled {
+        if strings.EqualFold(cfg.TelegramBotType, "centralized") {
+            reasons = append(reasons, "Telegram centralized registration")
+        } else {
+            reasons = append(reasons, "Telegram personal notifications")
+        }
+    }
+    // Email via relay
+    if cfg.EmailEnabled && strings.EqualFold(cfg.EmailDeliveryMethod, "relay") {
+        reasons = append(reasons, "Email relay delivery")
+    }
+    // Webhooks
+    if cfg.WebhookEnabled {
+        reasons = append(reasons, "Webhooks")
+    }
+    // Cloud uploads via rclone
+    if cfg.CloudEnabled {
+        reasons = append(reasons, "Cloud storage (rclone)")
+    }
+    return len(reasons) > 0, reasons
+}
+
+// checkInternetConnectivity attempts a couple of quick TCP dials to common endpoints.
+// It succeeds if at least one attempt connects.
+func checkInternetConnectivity(timeout time.Duration) error {
+    type target struct{ network, addr string }
+    targets := []target{
+        {"tcp", "1.1.1.1:443"},
+        {"tcp", "8.8.8.8:53"},
+    }
+    deadline := time.Now().Add(timeout)
+    for _, t := range targets {
+        d := net.Dialer{Timeout: time.Until(deadline)}
+        if conn, err := d.Dial(t.network, t.addr); err == nil {
+            _ = conn.Close()
+            return nil
+        }
+    }
+    return fmt.Errorf("no outbound connectivity (checked %d endpoints)", len(targets))
 }
 
 // formatBytes formats bytes in human-readable format

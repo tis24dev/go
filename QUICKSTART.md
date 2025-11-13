@@ -294,7 +294,7 @@ make build
 
 ## ✅ Checklist Setup
 
-- [ ] Go 1.21+ installato (`go version`)
+- [ ] Go 1.25+ installato (`go version`)
 - [ ] Directory progetto: `/opt/proxmox-backup`
 - [ ] Backup sistema bash esistente
 - [ ] `go mod init` eseguito
