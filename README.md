@@ -97,6 +97,19 @@ Start **Phase 1: Core Infrastructure**:
 
 ---
 
+## Compression Settings (Go pipeline)
+
+| `COMPRESSION_TYPE`           | Livelli ammessi (`COMPRESSION_LEVEL`) | Note sul mode (`COMPRESSION_MODE`) |
+|-----------------------------|---------------------------------------|------------------------------------|
+| `none`                      | 0                                     | Nessuna compressione |
+| `gzip`, `pigz`, `bzip2`     | 1‑9                                   | `maximum/ultra` → livello 9 (`pigz` usa `--best`) |
+| `xz`, `lzma`                | 0‑9                                   | `maximum/ultra` aggiungono `--extreme` / suffisso `e` |
+| `zstd`                      | 1‑22                                  | >19 forza `--ultra`; `maximum/ultra` mappano a 19/22 |
+
+`COMPRESSION_THREADS=0` lascia auto-threading; valori >0 controllano pigz/xz/zstd. Manifest e stats JSON riportano sempre algoritmo, livello, mode e thread effettivi per garantire parità con lo script Bash.
+
+---
+
 ## Available Make Commands
 
 ```bash

@@ -42,6 +42,12 @@ const (
 
 	// ExitDiskSpaceError - Spazio su disco insufficiente
 	ExitDiskSpaceError ExitCode = 12
+
+	// ExitPanicError - Panic non gestito intercettato
+	ExitPanicError ExitCode = 13
+
+	// ExitSecurityError - Errori rilevati dal controllo di sicurezza
+	ExitSecurityError ExitCode = 14
 )
 
 // String restituisce una descrizione testuale del codice di uscita
@@ -73,6 +79,10 @@ func (e ExitCode) String() string {
 		return "compression error"
 	case ExitDiskSpaceError:
 		return "disk space error"
+	case ExitPanicError:
+		return "panic error"
+	case ExitSecurityError:
+		return "security error"
 	default:
 		return "unknown error"
 	}

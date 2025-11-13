@@ -10,22 +10,27 @@ import (
 
 // Args holds the parsed command-line arguments
 type Args struct {
-	ConfigPath  string
-	LogLevel    types.LogLevel
-	DryRun      bool
-	ShowVersion bool
-	ShowHelp    bool
+	ConfigPath       string
+	ConfigPathSource string
+	LogLevel         types.LogLevel
+	DryRun           bool
+	ShowVersion      bool
+	ShowHelp         bool
+	ForceNewKey      bool
+	Decrypt          bool
+	Restore          bool
 }
 
 // Parse parses command-line arguments and returns Args struct
 func Parse() *Args {
 	args := &Args{}
 
+	const defaultConfigPath = "./configs/backup.env"
+	configFlag := newStringFlag(defaultConfigPath)
+
 	// Define flags
-	flag.StringVar(&args.ConfigPath, "config", "/opt/proxmox-backup/env/backup.env",
-		"Path to configuration file")
-	flag.StringVar(&args.ConfigPath, "c", "/opt/proxmox-backup/env/backup.env",
-		"Path to configuration file (shorthand)")
+	flag.Var(configFlag, "config", "Path to configuration file")
+	flag.Var(configFlag, "c", "Path to configuration file (shorthand)")
 
 	var logLevelStr string
 	flag.StringVar(&logLevelStr, "log-level", "",
@@ -48,6 +53,16 @@ func Parse() *Args {
 	flag.BoolVar(&args.ShowHelp, "h", false,
 		"Show help message (shorthand)")
 
+	flag.BoolVar(&args.ForceNewKey, "newkey", false,
+		"Reset AGE recipients and run the interactive setup (interactive mode only)")
+	flag.BoolVar(&args.ForceNewKey, "age-newkey", false,
+		"Alias for --newkey")
+
+	flag.BoolVar(&args.Decrypt, "decrypt", false,
+		"Run the interactive decrypt workflow (converts encrypted bundles into plaintext bundles)")
+	flag.BoolVar(&args.Restore, "restore", false,
+		"Run the interactive restore workflow (select bundle, optionally decrypt, apply to system)")
+
 	// Custom usage message
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: %s [options]\n\n", os.Args[0])
@@ -62,6 +77,13 @@ func Parse() *Args {
 
 	// Parse flags
 	flag.Parse()
+
+	args.ConfigPath = configFlag.value
+	if configFlag.set {
+		args.ConfigPathSource = "specified via --config/-c flag"
+	} else {
+		args.ConfigPathSource = "default path"
+	}
 
 	// Parse log level if provided
 	if logLevelStr != "" {
@@ -106,4 +128,23 @@ func ShowVersion() {
 	fmt.Printf("Build: development\n")
 	fmt.Printf("Author: tis24dev\n")
 	os.Exit(0)
+}
+
+type stringFlag struct {
+	value string
+	set   bool
+}
+
+func newStringFlag(defaultValue string) *stringFlag {
+	return &stringFlag{value: defaultValue}
+}
+
+func (s *stringFlag) String() string {
+	return s.value
+}
+
+func (s *stringFlag) Set(val string) error {
+	s.value = val
+	s.set = true
+	return nil
 }

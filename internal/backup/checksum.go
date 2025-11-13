@@ -22,8 +22,13 @@ type Manifest struct {
 	CreatedAt        time.Time `json:"created_at"`
 	CompressionType  string    `json:"compression_type"`
 	CompressionLevel int       `json:"compression_level"`
+	CompressionMode  string    `json:"compression_mode,omitempty"`
 	ProxmoxType      string    `json:"proxmox_type"`
+	ProxmoxTargets   []string  `json:"proxmox_targets,omitempty"`
+	ProxmoxVersion   string    `json:"proxmox_version,omitempty"`
 	Hostname         string    `json:"hostname"`
+	ScriptVersion    string    `json:"script_version,omitempty"`
+	EncryptionMode   string    `json:"encryption_mode,omitempty"`
 }
 
 // GenerateChecksum calculates SHA256 checksum of a file
@@ -64,13 +69,13 @@ func GenerateChecksum(ctx context.Context, logger *logging.Logger, filePath stri
 	}
 
 	checksum := hex.EncodeToString(hash.Sum(nil))
-	logger.Info("Generated checksum: %s", checksum)
+	logger.Debug("Generated checksum: %s", checksum)
 	return checksum, nil
 }
 
 // CreateManifest creates a manifest file with archive metadata and checksum
 func CreateManifest(ctx context.Context, logger *logging.Logger, manifest *Manifest, outputPath string) error {
-	logger.Info("Creating manifest file: %s", outputPath)
+	logger.Debug("Creating manifest file: %s", outputPath)
 
 	// Ensure output directory exists
 	if err := os.MkdirAll(filepath.Dir(outputPath), 0755); err != nil {
@@ -88,7 +93,7 @@ func CreateManifest(ctx context.Context, logger *logging.Logger, manifest *Manif
 		return fmt.Errorf("failed to write manifest file: %w", err)
 	}
 
-	logger.Info("Manifest created successfully")
+	logger.Debug("Manifest created successfully")
 	return nil
 }
 
@@ -103,7 +108,7 @@ func VerifyChecksum(ctx context.Context, logger *logging.Logger, filePath, expec
 
 	matches := actualChecksum == expectedChecksum
 	if matches {
-		logger.Info("Checksum verification passed")
+		logger.Debug("Checksum verification passed")
 	} else {
 		logger.Warning("Checksum mismatch! Expected: %s, Got: %s", expectedChecksum, actualChecksum)
 	}

@@ -34,6 +34,7 @@ func (o *Orchestrator) RegisterNotificationChannel(channel NotificationChannel) 
 }
 
 func (o *Orchestrator) dispatchPostBackup(ctx context.Context, stats *BackupStats) error {
+	// Phase 1: Storage operations (critical - failures abort backup)
 	for _, target := range o.storageTargets {
 		if err := target.Sync(ctx, stats); err != nil {
 			return &BackupError{
@@ -44,14 +45,14 @@ func (o *Orchestrator) dispatchPostBackup(ctx context.Context, stats *BackupStat
 		}
 	}
 
+	// Phase 2: Notifications (non-critical - failures don't abort backup)
+	// Notification errors are logged but never propagated
+	if len(o.notificationChannels) > 0 {
+		fmt.Println()
+		o.logStep(7, "Notifications - dispatching channels")
+	}
 	for _, channel := range o.notificationChannels {
-		if err := channel.Notify(ctx, stats); err != nil {
-			return &BackupError{
-				Phase: "notification",
-				Err:   fmt.Errorf("notification channel failed: %w", err),
-				Code:  types.ExitNetworkError,
-			}
-		}
+		_ = channel.Notify(ctx, stats) // Ignore errors - notifications are non-critical
 	}
 
 	return nil

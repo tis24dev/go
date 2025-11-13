@@ -28,11 +28,13 @@ type pveRuntimeInfo struct {
 // CollectPVEConfigs collects Proxmox VE specific configurations
 func (c *Collector) CollectPVEConfigs(ctx context.Context) error {
 	c.logger.Info("Collecting PVE configurations")
+	c.logger.Debug("Validating PVE environment and cluster state prior to collection")
 
 	// Check if we're actually on PVE
 	if _, err := os.Stat("/etc/pve"); os.IsNotExist(err) {
 		return fmt.Errorf("not a PVE system: /etc/pve not found")
 	}
+	c.logger.Debug("/etc/pve detected, continuing with PVE collection")
 
 	clustered := false
 	if isClustered, err := c.isClusteredPVE(ctx); err != nil {
@@ -42,54 +44,77 @@ func (c *Collector) CollectPVEConfigs(ctx context.Context) error {
 		c.logger.Debug("Cluster detection failed, assuming standalone node: %v", err)
 	} else {
 		clustered = isClustered
+		c.logger.Debug("Cluster detection completed: clustered=%v", clustered)
 	}
 
 	// Collect PVE directories
+	c.logger.Debug("Collecting PVE directories (clustered=%v)", clustered)
 	if err := c.collectPVEDirectories(ctx, clustered); err != nil {
 		return fmt.Errorf("failed to collect PVE directories: %w", err)
 	}
+	c.logger.Debug("PVE directory collection completed")
 
 	// Collect PVE commands output
+	c.logger.Debug("Collecting PVE command outputs and runtime state")
 	runtimeInfo, err := c.collectPVECommands(ctx, clustered)
 	if err != nil {
 		return fmt.Errorf("failed to collect PVE commands: %w", err)
 	}
+	c.logger.Debug("PVE command output collection completed")
 
 	// Collect VM/CT configurations
 	if c.config.BackupVMConfigs {
+		c.logger.Debug("Collecting VM/CT configuration files")
 		if err := c.collectVMConfigs(ctx); err != nil {
 			c.logger.Warning("Failed to collect VM configs: %v", err)
 			// Non-fatal, continue
+		} else {
+			c.logger.Debug("VM/CT configuration collection completed")
 		}
 	}
 
 	if c.config.BackupPVEJobs {
+		c.logger.Debug("Collecting PVE job definitions for nodes: %v", runtimeInfo.Nodes)
 		if err := c.collectPVEJobs(ctx, runtimeInfo.Nodes); err != nil {
 			c.logger.Warning("Failed to collect PVE job information: %v", err)
+		} else {
+			c.logger.Debug("PVE job collection completed")
 		}
 	}
 
 	if c.config.BackupPVESchedules {
+		c.logger.Debug("Collecting PVE schedule information")
 		if err := c.collectPVESchedules(ctx); err != nil {
 			c.logger.Warning("Failed to collect PVE schedules: %v", err)
+		} else {
+			c.logger.Debug("PVE schedule collection completed")
 		}
 	}
 
 	if c.config.BackupPVEReplication {
+		c.logger.Debug("Collecting PVE replication settings for nodes: %v", runtimeInfo.Nodes)
 		if err := c.collectPVEReplication(ctx, runtimeInfo.Nodes); err != nil {
 			c.logger.Warning("Failed to collect PVE replication info: %v", err)
+		} else {
+			c.logger.Debug("PVE replication collection completed")
 		}
 	}
 
 	if c.config.BackupPVEBackupFiles {
+		c.logger.Debug("Collecting datastore metadata for PVE backup files")
 		if err := c.collectPVEStorageMetadata(ctx, runtimeInfo.Storages); err != nil {
 			c.logger.Warning("Failed to collect PVE datastore metadata: %v", err)
+		} else {
+			c.logger.Debug("PVE datastore metadata collection completed")
 		}
 	}
 
 	if c.config.BackupCephConfig {
+		c.logger.Debug("Collecting Ceph configuration and status")
 		if err := c.collectPVECephInfo(ctx); err != nil {
 			c.logger.Warning("Failed to collect Ceph information: %v", err)
+		} else {
+			c.logger.Debug("Ceph information collection completed")
 		}
 	}
 
@@ -99,6 +124,7 @@ func (c *Collector) CollectPVEConfigs(ctx context.Context) error {
 
 // collectPVEDirectories collects PVE-specific directories
 func (c *Collector) collectPVEDirectories(ctx context.Context, clustered bool) error {
+	c.logger.Debug("Snapshotting PVE directories (clustered=%v)", clustered)
 	// PVE main configuration directory
 	if err := c.safeCopyDir(ctx,
 		"/etc/pve",
@@ -145,6 +171,7 @@ func (c *Collector) collectPVEDirectories(ctx context.Context, clustered bool) e
 		}
 	}
 
+	c.logger.Debug("PVE directory snapshot completed")
 	return nil
 }
 
@@ -154,6 +181,7 @@ func (c *Collector) collectPVECommands(ctx context.Context, clustered bool) (*pv
 	if err := c.ensureDir(commandsDir); err != nil {
 		return nil, fmt.Errorf("failed to create commands directory: %w", err)
 	}
+	c.logger.Debug("Collecting PVE command outputs into %s", commandsDir)
 
 	// PVE version (CRITICAL)
 	if err := c.safeCmdOutput(ctx,
@@ -330,11 +358,13 @@ func (c *Collector) collectPVECommands(ctx context.Context, clustered bool) (*pv
 		sort.Strings(info.Nodes)
 	}
 
+	c.logger.Debug("PVE command output collection finished: %d nodes, %d storages", len(info.Nodes), len(info.Storages))
 	return info, nil
 }
 
 // collectVMConfigs collects VM and Container configurations
 func (c *Collector) collectVMConfigs(ctx context.Context) error {
+	c.logger.Debug("Collecting VM and container configuration directories")
 	// QEMU VMs
 	vmConfigDir := "/etc/pve/qemu-server"
 	if _, err := os.Stat(vmConfigDir); err == nil {
@@ -379,6 +409,7 @@ func (c *Collector) collectVMConfigs(ctx context.Context) error {
 		"LXC containers list",
 		false)
 
+	c.logger.Debug("VM/CT configuration collection finished")
 	return nil
 }
 
@@ -386,6 +417,7 @@ func (c *Collector) collectPVEJobs(ctx context.Context, nodes []string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	c.logger.Debug("Collecting PVE job definitions and histories for nodes: %v", nodes)
 
 	jobsDir := filepath.Join(c.tempDir, "var/lib/pve-cluster/info/jobs")
 	if err := c.ensureDir(jobsDir); err != nil {
@@ -426,6 +458,7 @@ func (c *Collector) collectPVEJobs(ctx context.Context, nodes []string) error {
 		return err
 	}
 
+	c.logger.Debug("PVE job collection completed (jobs dir: %s)", jobsDir)
 	return nil
 }
 
@@ -433,6 +466,7 @@ func (c *Collector) collectPVESchedules(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	c.logger.Debug("Collecting schedule information (cron/systemd timers)")
 
 	schedulesDir := filepath.Join(c.tempDir, "var/lib/pve-cluster/info/schedules")
 	if err := c.ensureDir(schedulesDir); err != nil {
@@ -469,6 +503,7 @@ func (c *Collector) collectPVESchedules(ctx context.Context) error {
 		}
 	}
 
+	c.logger.Debug("PVE schedule collection completed (output dir: %s)", schedulesDir)
 	return nil
 }
 
@@ -476,6 +511,7 @@ func (c *Collector) collectPVEReplication(ctx context.Context, nodes []string) e
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	c.logger.Debug("Collecting replication jobs for nodes: %v", nodes)
 
 	repDir := filepath.Join(c.tempDir, "var/lib/pve-cluster/info/replication")
 	if err := c.ensureDir(repDir); err != nil {
@@ -508,6 +544,7 @@ func (c *Collector) collectPVEReplication(ctx context.Context, nodes []string) e
 			false)
 	}
 
+	c.logger.Debug("PVE replication collection completed (dir: %s)", repDir)
 	return nil
 }
 
@@ -515,6 +552,7 @@ func (c *Collector) collectPVEStorageMetadata(ctx context.Context, storages []pv
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	c.logger.Debug("Collecting datastore metadata for %d storages", len(storages))
 
 	if len(storages) == 0 {
 		c.logger.Debug("No PVE storage entries detected, skipping datastore metadata")
@@ -614,6 +652,7 @@ func (c *Collector) collectPVEStorageMetadata(ctx context.Context, storages []pv
 		}
 	}
 
+	c.logger.Debug("PVE datastore metadata collection completed (%d processed)", processed)
 	return nil
 }
 
@@ -621,6 +660,7 @@ func (c *Collector) collectPVECephInfo(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	c.logger.Debug("Collecting Ceph cluster information")
 
 	if _, err := exec.LookPath("ceph"); err != nil {
 		c.logger.Debug("Ceph CLI not available, skipping Ceph information collection")
@@ -662,6 +702,7 @@ func (c *Collector) collectPVECephInfo(ctx context.Context) error {
 			false)
 	}
 
+	c.logger.Debug("Ceph information collection completed")
 	return nil
 }
 
@@ -670,6 +711,7 @@ func (c *Collector) isClusteredPVE(ctx context.Context) (bool, error) {
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
+	c.logger.Debug("Checking cluster status via pvecm")
 
 	if _, err := exec.LookPath("pvecm"); err != nil {
 		return false, nil
@@ -681,7 +723,9 @@ func (c *Collector) isClusteredPVE(ctx context.Context) (bool, error) {
 		return false, fmt.Errorf("pvecm status failed: %w", err)
 	}
 
-	return strings.Contains(string(output), "Cluster information"), nil
+	clustered := strings.Contains(string(output), "Cluster information")
+	c.logger.Debug("pvecm status detected clustered=%v", clustered)
+	return clustered, nil
 }
 
 func shortHostname(host string) string {

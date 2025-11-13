@@ -67,8 +67,13 @@ func TestCreateAndLoadManifest(t *testing.T) {
 		CreatedAt:        time.Now().UTC().Truncate(time.Second),
 		CompressionType:  "xz",
 		CompressionLevel: 6,
+		CompressionMode:  "ultra",
 		ProxmoxType:      "pbs",
+		ProxmoxTargets:   []string{"pbs"},
+		ProxmoxVersion:   "7.4-3",
 		Hostname:         "test-host",
+		ScriptVersion:    "0.2.0",
+		EncryptionMode:   "age",
 	}
 
 	if err := CreateManifest(ctx, logger, manifest, manifestPath); err != nil {
@@ -92,7 +97,28 @@ func TestCreateAndLoadManifest(t *testing.T) {
 	if loaded.CompressionLevel != manifest.CompressionLevel {
 		t.Errorf("CompressionLevel mismatch: got %d, want %d", loaded.CompressionLevel, manifest.CompressionLevel)
 	}
+	if loaded.CompressionMode != manifest.CompressionMode {
+		t.Errorf("CompressionMode mismatch: got %s, want %s", loaded.CompressionMode, manifest.CompressionMode)
+	}
 	if loaded.Hostname != manifest.Hostname {
 		t.Errorf("Hostname mismatch: got %s, want %s", loaded.Hostname, manifest.Hostname)
+	}
+	if loaded.ScriptVersion != manifest.ScriptVersion {
+		t.Errorf("ScriptVersion mismatch: got %s, want %s", loaded.ScriptVersion, manifest.ScriptVersion)
+	}
+	if loaded.EncryptionMode != manifest.EncryptionMode {
+		t.Errorf("EncryptionMode mismatch: got %s, want %s", loaded.EncryptionMode, manifest.EncryptionMode)
+	}
+	if len(loaded.ProxmoxTargets) != len(manifest.ProxmoxTargets) {
+		t.Errorf("ProxmoxTargets length mismatch: got %d, want %d", len(loaded.ProxmoxTargets), len(manifest.ProxmoxTargets))
+	} else {
+		for i := range loaded.ProxmoxTargets {
+			if loaded.ProxmoxTargets[i] != manifest.ProxmoxTargets[i] {
+				t.Errorf("ProxmoxTargets mismatch at %d: got %s, want %s", i, loaded.ProxmoxTargets[i], manifest.ProxmoxTargets[i])
+			}
+		}
+	}
+	if loaded.ProxmoxVersion != manifest.ProxmoxVersion {
+		t.Errorf("ProxmoxVersion mismatch: got %s, want %s", loaded.ProxmoxVersion, manifest.ProxmoxVersion)
 	}
 }

@@ -8,7 +8,9 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -17,18 +19,37 @@ import (
 	"github.com/tis24dev/proxmox-backup/internal/cli"
 	"github.com/tis24dev/proxmox-backup/internal/config"
 	"github.com/tis24dev/proxmox-backup/internal/environment"
+	"github.com/tis24dev/proxmox-backup/internal/identity"
 	"github.com/tis24dev/proxmox-backup/internal/logging"
+	"github.com/tis24dev/proxmox-backup/internal/notify"
 	"github.com/tis24dev/proxmox-backup/internal/orchestrator"
+	"github.com/tis24dev/proxmox-backup/internal/security"
+	"github.com/tis24dev/proxmox-backup/internal/storage"
 	"github.com/tis24dev/proxmox-backup/internal/types"
 	"github.com/tis24dev/proxmox-backup/pkg/utils"
 )
 
 const (
-	version = "0.2.0-dev"
+	version = "0.2.0" // Semantic version format required by cloud relay worker
 )
 
 func main() {
+	os.Exit(run())
+}
+
+var closeStdinOnce sync.Once
+
+func run() int {
 	bootstrap := logging.NewBootstrapLogger()
+
+	defer func() {
+		if r := recover(); r != nil {
+			stack := debug.Stack()
+			bootstrap.Error("PANIC: %v", r)
+			fmt.Fprintf(os.Stderr, "panic: %v\n%s\n", r, stack)
+			os.Exit(types.ExitPanicError.Int())
+		}
+	}()
 
 	// Setup signal handling for graceful shutdown
 	ctx, cancel := context.WithCancel(context.Background())
@@ -41,6 +62,11 @@ func main() {
 		sig := <-sigChan
 		bootstrap.Warning("\nReceived signal %v, initiating graceful shutdown...", sig)
 		cancel() // Cancel context to stop all operations
+		closeStdinOnce.Do(func() {
+			if file := os.Stdin; file != nil {
+				_ = file.Close()
+			}
+		})
 	}()
 
 	// Parse command-line arguments
@@ -49,20 +75,20 @@ func main() {
 	// Handle version flag
 	if args.ShowVersion {
 		cli.ShowVersion()
-		return
+		return types.ExitSuccess.Int()
 	}
 
 	// Handle help flag
 	if args.ShowHelp {
 		cli.ShowHelp()
-		return
+		return types.ExitSuccess.Int()
 	}
 
 	// Print header
 	bootstrap.Println("===========================================")
 	bootstrap.Println("  Proxmox Backup - Go Version")
 	bootstrap.Printf("  Version: %s", version)
-	bootstrap.Println("  Phase: 4.1 - Advanced Collection")
+	bootstrap.Println("  Phase: 5.1 - Notifications")
 	bootstrap.Println("===========================================")
 	bootstrap.Println("")
 
@@ -90,7 +116,7 @@ func main() {
 	cfg, err := config.LoadConfig(args.ConfigPath)
 	if err != nil {
 		bootstrap.Error("ERROR: Failed to load configuration: %v", err)
-		os.Exit(types.ExitConfigError.Int())
+		return types.ExitConfigError.Int()
 	}
 	if cfg.BaseDir == "" {
 		cfg.BaseDir = autoBaseDir
@@ -101,7 +127,7 @@ func main() {
 
 	if err := validateFutureFeatures(cfg); err != nil {
 		bootstrap.Error("ERROR: Invalid configuration: %v", err)
-		os.Exit(types.ExitConfigError.Int())
+		return types.ExitConfigError.Int()
 	}
 
 	// Determine log level (CLI overrides config)
@@ -135,33 +161,106 @@ func main() {
 	logging.Info("Environment: %s %s", envInfo.Type, envInfo.Version)
 	logging.Info("Backup enabled: %v", cfg.BackupEnabled)
 	logging.Info("Debug level: %s", logLevel.String())
-	logging.Info("Compression: %s (level %d)", cfg.CompressionType, cfg.CompressionLevel)
+	logging.Info("Compression: %s (level %d, mode %s)", cfg.CompressionType, cfg.CompressionLevel, cfg.CompressionMode)
 	logging.Info("Base directory: %s (%s)", cfg.BaseDir, baseDirSource)
-	logging.Info("Backup path: %s", cfg.BackupPath)
-	logging.Info("Log path: %s", cfg.LogPath)
-	fmt.Println()
+	configSource := args.ConfigPathSource
+	if configSource == "" {
+		configSource = "configured path"
+	}
+	logging.Info("Configuration file: %s (%s)", args.ConfigPath, configSource)
 
-	// Verify directories
-	logging.Info("Verifying directory structure...")
-	checkDir := func(name, path string) {
-		if utils.DirExists(path) {
-			logging.Info("✓ %s exists: %s", name, path)
-		} else {
-			logging.Warning("✗ %s not found: %s", name, path)
+	var identityInfo *identity.Info
+	serverIDValue := strings.TrimSpace(cfg.ServerID)
+	serverMACValue := ""
+	telegramServerStatus := "Telegram disabled"
+	if info, err := identity.Detect(cfg.BaseDir, logger); err != nil {
+		logging.Warning("WARNING: Failed to load server identity: %v", err)
+		identityInfo = info
+	} else {
+		identityInfo = info
+	}
+
+	if identityInfo != nil {
+		if identityInfo.ServerID != "" {
+			serverIDValue = identityInfo.ServerID
+		}
+		if identityInfo.PrimaryMAC != "" {
+			serverMACValue = identityInfo.PrimaryMAC
 		}
 	}
 
-	checkDir("Backup directory", cfg.BackupPath)
-	checkDir("Log directory", cfg.LogPath)
-	checkDir("Lock directory", cfg.LockPath)
+	if serverIDValue != "" && cfg.ServerID == "" {
+		cfg.ServerID = serverIDValue
+	}
+
+	logServerIdentityValues(serverIDValue, serverMACValue)
+	logTelegramInfo := true
+	if cfg.TelegramEnabled {
+		if strings.EqualFold(cfg.TelegramBotType, "centralized") {
+			logging.Debug("Contacting remote Telegram server...")
+			status := notify.CheckTelegramRegistration(ctx, cfg.TelegramServerAPIHost, serverIDValue, logger)
+			if status.Error != nil {
+				logging.Warning("Telegram: %s", status.Message)
+				logTelegramInfo = false
+			} else {
+				logging.Debug("Remote server contacted: Bot token / chat ID verified (handshake)")
+			}
+			telegramServerStatus = status.Message
+		} else {
+			telegramServerStatus = "Personal mode - no remote contact"
+		}
+	}
+	if logTelegramInfo {
+		logging.Info("Server Telegram: %s", telegramServerStatus)
+	}
+
+	execPath, err := os.Executable()
+	if err != nil {
+		execPath = ""
+	}
+	if _, secErr := security.Run(ctx, logger, cfg, args.ConfigPath, execPath, envInfo); secErr != nil {
+		logging.Error("Security checks failed: %v", secErr)
+		return types.ExitSecurityError.Int()
+	}
 	fmt.Println()
+
+	if args.Restore {
+		logging.Info("Restore mode enabled - starting interactive workflow...")
+		if err := orchestrator.RunRestoreWorkflow(ctx, cfg, logger, version); err != nil {
+			if errors.Is(err, orchestrator.ErrRestoreAborted) || errors.Is(err, orchestrator.ErrDecryptAborted) {
+				logging.Info("Restore workflow aborted by user")
+				return types.ExitSuccess.Int()
+			}
+			logging.Error("Restore workflow failed: %v", err)
+			return types.ExitGenericError.Int()
+		}
+		logging.Info("Restore workflow completed successfully")
+		return types.ExitSuccess.Int()
+	}
+
+	if args.Decrypt {
+		logging.Info("Decrypt mode enabled - starting interactive workflow...")
+		if err := orchestrator.RunDecryptWorkflow(ctx, cfg, logger, version); err != nil {
+			if errors.Is(err, orchestrator.ErrDecryptAborted) {
+				logging.Info("Decrypt workflow aborted by user")
+				return types.ExitSuccess.Int()
+			}
+			logging.Error("Decrypt workflow failed: %v", err)
+			return types.ExitGenericError.Int()
+		}
+		logging.Info("Decrypt workflow completed successfully")
+		return types.ExitSuccess.Int()
+	}
 
 	// Initialize orchestrator
 	logging.Info("Initializing backup orchestrator...")
 	bashScriptPath := "/opt/proxmox-backup/script"
 	orch := orchestrator.New(logger, bashScriptPath, args.DryRun)
+	orch.SetForceNewAgeRecipient(args.ForceNewKey)
 	orch.SetVersion(version)
 	orch.SetConfig(cfg)
+	orch.SetIdentity(serverIDValue, serverMACValue)
+	orch.SetProxmoxVersion(envInfo.Version)
 
 	// Configure backup paths and compression
 	excludePatterns := append([]string(nil), cfg.ExcludePatterns...)
@@ -179,6 +278,7 @@ func main() {
 		cfg.CompressionType,
 		cfg.CompressionLevel,
 		cfg.CompressionThreads,
+		cfg.CompressionMode,
 		excludePatterns,
 	)
 
@@ -191,11 +291,52 @@ func main() {
 		PrefilterMaxFileSizeBytes: int64(cfg.PrefilterMaxFileSizeMB) * 1024 * 1024,
 	})
 
+	if err := orch.EnsureAgeRecipientsReady(ctx); err != nil {
+		if errors.Is(err, orchestrator.ErrAgeRecipientSetupAborted) {
+			logging.Warning("Encryption setup aborted by user. Exiting...")
+			return types.ExitGenericError.Int()
+		}
+		logging.Error("ERROR: %v", err)
+		return types.ExitConfigError.Int()
+	}
+
 	logging.Info("✓ Orchestrator initialized")
 	fmt.Println()
 
+	// Verify directories
+	logging.Info("Verifying directory structure...")
+	checkDir := func(name, path string) {
+		if utils.DirExists(path) {
+			logging.Info("✓ %s exists: %s", name, path)
+		} else {
+			logging.Warning("✗ %s not found: %s", name, path)
+		}
+	}
+
+	checkDir("Backup directory", cfg.BackupPath)
+	checkDir("Log directory", cfg.LogPath)
+	if cfg.SecondaryEnabled {
+		secondaryLogPath := strings.TrimSpace(cfg.SecondaryLogPath)
+		if secondaryLogPath != "" {
+			checkDir("Secondary log directory", secondaryLogPath)
+		} else {
+			logging.Warning("✗ Secondary log directory not configured (secondary storage enabled)")
+		}
+	}
+	if cfg.CloudEnabled {
+		cloudLogPath := strings.TrimSpace(cfg.CloudLogPath)
+		if cloudLogPath == "" {
+			logging.Warning("✗ Cloud log directory not configured (cloud storage enabled)")
+		} else if isLocalPath(cloudLogPath) {
+			checkDir("Cloud log directory", cloudLogPath)
+		} else {
+			logging.Info("Skipping local validation for cloud log directory (remote path): %s", cloudLogPath)
+		}
+	}
+	checkDir("Lock directory", cfg.LockPath)
+
 	// Initialize pre-backup checker
-	logging.Info("Configuring pre-backup validation checks...")
+	logging.Debug("Configuring pre-backup validation checks...")
 	checkerConfig := checks.GetDefaultCheckerConfig(cfg.BackupPath, cfg.LogPath, cfg.LockPath)
 	checkerConfig.SecondaryEnabled = cfg.SecondaryEnabled
 	if cfg.SecondaryEnabled && strings.TrimSpace(cfg.SecondaryPath) != "" {
@@ -215,7 +356,7 @@ func main() {
 	checkerConfig.DryRun = args.DryRun
 	if err := checkerConfig.Validate(); err != nil {
 		logging.Error("Invalid checker configuration: %v", err)
-		os.Exit(types.ExitConfigError.Int())
+		return types.ExitConfigError.Int()
 	}
 	checker := checks.NewChecker(logger, checkerConfig)
 	orch.SetChecker(checker)
@@ -227,7 +368,150 @@ func main() {
 		}
 	}()
 
-	logging.Info("✓ Pre-backup checks configured")
+	logging.Debug("✓ Pre-backup checks configured")
+	fmt.Println()
+
+	// Initialize storage backends
+	logging.Info("Initializing storage backends...")
+
+	// Primary (local) storage - always enabled
+	localBackend, err := storage.NewLocalStorage(cfg, logger)
+	if err != nil {
+		logging.Error("Failed to initialize local storage: %v", err)
+		return types.ExitConfigError.Int()
+	}
+	localFS, err := detectFilesystemInfo(ctx, localBackend, cfg.BackupPath, logger)
+	if err != nil {
+		logging.Error("Failed to prepare primary storage: %v", err)
+		return types.ExitConfigError.Int()
+	}
+	logging.Info("Path Primary: %s", formatDetailedFilesystemLabel(cfg.BackupPath, localFS))
+
+	localStats := fetchStorageStats(ctx, localBackend, logger, "Local storage")
+
+	localAdapter := orchestrator.NewStorageAdapter(localBackend, logger, cfg.MaxLocalBackups)
+	localAdapter.SetFilesystemInfo(localFS)
+	localAdapter.SetInitialStats(localStats)
+	orch.RegisterStorageTarget(localAdapter)
+	logging.Info(formatStorageInitSummary("Local storage", cfg.MaxLocalBackups, localStats))
+
+	// Secondary storage - optional
+	var secondaryFS *storage.FilesystemInfo
+	if cfg.SecondaryEnabled {
+		secondaryBackend, err := storage.NewSecondaryStorage(cfg, logger)
+		if err != nil {
+			logging.Warning("Failed to initialize secondary storage: %v", err)
+			logging.Info("Path Secondary: %s", formatDetailedFilesystemLabel(cfg.SecondaryPath, nil))
+		} else {
+			secondaryFS, _ = detectFilesystemInfo(ctx, secondaryBackend, cfg.SecondaryPath, logger)
+			logging.Info("Path Secondary: %s", formatDetailedFilesystemLabel(cfg.SecondaryPath, secondaryFS))
+			secondaryStats := fetchStorageStats(ctx, secondaryBackend, logger, "Secondary storage")
+			secondaryAdapter := orchestrator.NewStorageAdapter(secondaryBackend, logger, cfg.MaxSecondaryBackups)
+			secondaryAdapter.SetFilesystemInfo(secondaryFS)
+			secondaryAdapter.SetInitialStats(secondaryStats)
+			orch.RegisterStorageTarget(secondaryAdapter)
+			logging.Info(formatStorageInitSummary("Secondary storage", cfg.MaxSecondaryBackups, secondaryStats))
+		}
+	} else {
+		logging.Info("Path Secondary: disabled")
+	}
+
+	// Cloud storage - optional
+	var cloudFS *storage.FilesystemInfo
+	if cfg.CloudEnabled {
+		cloudBackend, err := storage.NewCloudStorage(cfg, logger)
+		if err != nil {
+			logging.Warning("Failed to initialize cloud storage: %v", err)
+			logging.Info("Path Cloud: %s", formatDetailedFilesystemLabel(cfg.CloudRemote, nil))
+		} else {
+			cloudFS, _ = detectFilesystemInfo(ctx, cloudBackend, cfg.CloudRemote, logger)
+			logging.Info("Path Cloud: %s", formatDetailedFilesystemLabel(cfg.CloudRemote, cloudFS))
+			cloudStats := fetchStorageStats(ctx, cloudBackend, logger, "Cloud storage")
+			cloudAdapter := orchestrator.NewStorageAdapter(cloudBackend, logger, cfg.MaxCloudBackups)
+			cloudAdapter.SetFilesystemInfo(cloudFS)
+			cloudAdapter.SetInitialStats(cloudStats)
+			orch.RegisterStorageTarget(cloudAdapter)
+			logging.Info(formatStorageInitSummary("Cloud storage", cfg.MaxCloudBackups, cloudStats))
+		}
+	} else {
+		logging.Info("Path Cloud: disabled")
+	}
+
+	// Initialize notification channels
+	logging.Info("Initializing notification channels...")
+
+	// Telegram notifications
+	if cfg.TelegramEnabled {
+		telegramConfig := notify.TelegramConfig{
+			Enabled:       true,
+			Mode:          notify.TelegramMode(cfg.TelegramBotType),
+			BotToken:      cfg.TelegramBotToken,
+			ChatID:        cfg.TelegramChatID,
+			ServerAPIHost: cfg.TelegramServerAPIHost,
+			ServerID:      cfg.ServerID,
+		}
+		telegramNotifier, err := notify.NewTelegramNotifier(telegramConfig, logger)
+		if err != nil {
+			logging.Warning("Failed to initialize Telegram notifier: %v", err)
+		} else {
+			telegramAdapter := orchestrator.NewNotificationAdapter(telegramNotifier, logger)
+			orch.RegisterNotificationChannel(telegramAdapter)
+			logging.Info("✓ Telegram notifications initialized (mode: %s)", cfg.TelegramBotType)
+		}
+	} else {
+		logging.Info("Telegram notifications: disabled")
+	}
+
+	// Email notifications
+	if cfg.EmailEnabled {
+		emailConfig := notify.EmailConfig{
+			Enabled:          true,
+			DeliveryMethod:   notify.EmailDeliveryMethod(cfg.EmailDeliveryMethod),
+			FallbackSendmail: cfg.EmailFallbackSendmail,
+			Recipient:        cfg.EmailRecipient,
+			From:             cfg.EmailFrom,
+			CloudRelayConfig: notify.CloudRelayConfig{
+				WorkerURL:   cfg.CloudflareWorkerURL,
+				WorkerToken: cfg.CloudflareWorkerToken,
+				HMACSecret:  cfg.CloudflareHMACSecret,
+				Timeout:     cfg.WorkerTimeout,
+				MaxRetries:  cfg.WorkerMaxRetries,
+				RetryDelay:  cfg.WorkerRetryDelay,
+			},
+		}
+		emailNotifier, err := notify.NewEmailNotifier(emailConfig, envInfo.Type, logger)
+		if err != nil {
+			logging.Warning("Failed to initialize Email notifier: %v", err)
+		} else {
+			emailAdapter := orchestrator.NewNotificationAdapter(emailNotifier, logger)
+			orch.RegisterNotificationChannel(emailAdapter)
+			logging.Info("✓ Email notifications initialized (method: %s)", cfg.EmailDeliveryMethod)
+		}
+	} else {
+		logging.Info("Email notifications: disabled")
+	}
+
+	// Webhook Notifications
+	if cfg.WebhookEnabled {
+		logging.Debug("Initializing webhook notifier...")
+		webhookConfig := cfg.BuildWebhookConfig()
+		logging.Debug("Webhook config built: %d endpoints configured", len(webhookConfig.Endpoints))
+
+		webhookNotifier, err := notify.NewWebhookNotifier(webhookConfig, logger)
+		if err != nil {
+			logging.Warning("Failed to initialize Webhook notifier: %v", err)
+		} else {
+			logging.Debug("Creating webhook notification adapter...")
+			webhookAdapter := orchestrator.NewNotificationAdapter(webhookNotifier, logger)
+
+			logging.Debug("Registering webhook notification channel with orchestrator...")
+			orch.RegisterNotificationChannel(webhookAdapter)
+			logging.Info("✓ Webhook notifications initialized (%d endpoint(s))", len(webhookConfig.Endpoints))
+		}
+	} else {
+		logging.Info("Webhook notifications: disabled")
+	}
+
 	fmt.Println()
 
 	// Validate bash scripts exist
@@ -242,16 +526,39 @@ func main() {
 
 	// Storage info
 	logging.Info("Storage configuration:")
-	logging.Info("  Primary: %s", cfg.BackupPath)
-	logging.Info("  Secondary storage: %v", cfg.SecondaryEnabled)
+	logging.Info("  Primary: %s", formatStorageLabel(cfg.BackupPath, localFS))
 	if cfg.SecondaryEnabled {
-		logging.Info("    Path: %s", cfg.SecondaryPath)
-		logging.Info("    Retention: %d days", cfg.SecondaryRetentionDays)
+		logging.Info("  Secondary storage: %s", formatStorageLabel(cfg.SecondaryPath, secondaryFS))
+	} else {
+		logging.Info("  Secondary storage: disabled")
 	}
-	logging.Info("  Cloud storage: %v", cfg.CloudEnabled)
 	if cfg.CloudEnabled {
-		logging.Info("    Remote: %s", cfg.CloudRemote)
-		logging.Info("    Retention: %d days", cfg.CloudRetentionDays)
+		logging.Info("  Cloud storage: %s", formatStorageLabel(cfg.CloudRemote, cloudFS))
+	} else {
+		logging.Info("  Cloud storage: disabled")
+	}
+	fmt.Println()
+
+	// Log configuration info
+	logging.Info("Log configuration:")
+	logging.Info("  Primary: %s", cfg.LogPath)
+	if cfg.SecondaryEnabled {
+		if strings.TrimSpace(cfg.SecondaryLogPath) != "" {
+			logging.Info("  Secondary: %s", cfg.SecondaryLogPath)
+		} else {
+			logging.Info("  Secondary: disabled (log path not configured)")
+		}
+	} else {
+		logging.Info("  Secondary: disabled")
+	}
+	if cfg.CloudEnabled {
+		if strings.TrimSpace(cfg.CloudLogPath) != "" {
+			logging.Info("  Cloud: %s", cfg.CloudLogPath)
+		} else {
+			logging.Info("  Cloud: disabled (log path not configured)")
+		}
+	} else {
+		logging.Info("  Cloud: disabled")
 	}
 	fmt.Println()
 
@@ -263,20 +570,19 @@ func main() {
 	fmt.Println()
 
 	useGoPipeline := cfg.EnableGoBackup
-	if !useGoPipeline {
+	if useGoPipeline {
+		logging.Debug("Go backup pipeline enabled")
+	} else {
 		logging.Info("Go backup pipeline disabled (ENABLE_GO_BACKUP=false). Using legacy bash workflow.")
 	}
 
 	// Run backup orchestration
 	if cfg.BackupEnabled {
 		if useGoPipeline {
-			// Run pre-backup validation checks
-			logging.Info("Running pre-backup validation checks...")
 			if err := orch.RunPreBackupChecks(ctx); err != nil {
 				logging.Error("Pre-backup validation failed: %v", err)
-				os.Exit(types.ExitBackupError.Int())
+				return types.ExitBackupError.Int()
 			}
-			logging.Info("✓ All pre-backup checks passed")
 			fmt.Println()
 
 			logging.Info("Starting Go backup orchestration...")
@@ -290,25 +596,25 @@ func main() {
 				// Check if error is due to cancellation
 				if ctx.Err() == context.Canceled {
 					logging.Warning("Backup was canceled")
-					os.Exit(128 + int(syscall.SIGINT)) // Standard Unix exit code for SIGINT
+					return 128 + int(syscall.SIGINT) // Standard Unix exit code for SIGINT
 				}
 
 				// Check if it's a BackupError with specific exit code
 				var backupErr *orchestrator.BackupError
 				if errors.As(err, &backupErr) {
 					logging.Error("Backup %s failed: %v", backupErr.Phase, backupErr.Err)
-					os.Exit(backupErr.Code.Int())
+					return backupErr.Code.Int()
 				}
 
 				// Generic backup error
 				logging.Error("Backup orchestration failed: %v", err)
-				os.Exit(types.ExitBackupError.Int())
+				return types.ExitBackupError.Int()
 			}
 
 			if err := orch.SaveStatsReport(stats); err != nil {
 				logging.Warning("Failed to persist backup statistics: %v", err)
 			} else if stats.ReportPath != "" {
-				logging.Info("Statistics report saved to %s", stats.ReportPath)
+				logging.Info("✓ Statistics report saved to %s", stats.ReportPath)
 			}
 
 			// Display backup statistics
@@ -321,36 +627,50 @@ func main() {
 			logging.Info("Directories created: %d", stats.DirsCreated)
 			logging.Info("Data collected: %s", formatBytes(stats.BytesCollected))
 			logging.Info("Archive size: %s", formatBytes(stats.ArchiveSize))
-			if stats.BytesCollected > 0 {
+			switch {
+			case stats.CompressionSavingsPercent > 0:
+				logging.Info("Compression ratio: %.1f%%", stats.CompressionSavingsPercent)
+			case stats.CompressionRatioPercent > 0:
+				logging.Info("Compression ratio: %.1f%%", stats.CompressionRatioPercent)
+			case stats.BytesCollected > 0:
 				ratio := float64(stats.ArchiveSize) / float64(stats.BytesCollected) * 100
 				logging.Info("Compression ratio: %.1f%%", ratio)
+			default:
+				logging.Info("Compression ratio: N/A")
 			}
-			logging.Info("Compression used: %s (level %d)", stats.Compression, stats.CompressionLevel)
+			logging.Info("Compression used: %s (level %d, mode %s)", stats.Compression, stats.CompressionLevel, stats.CompressionMode)
 			if stats.RequestedCompression != stats.Compression {
 				logging.Info("Requested compression: %s", stats.RequestedCompression)
 			}
 			logging.Info("Duration: %s", formatDuration(stats.Duration))
-			logging.Info("Archive path: %s", stats.ArchivePath)
-			if stats.ManifestPath != "" {
-				logging.Info("Manifest path: %s", stats.ManifestPath)
-			}
-			if stats.Checksum != "" {
-				logging.Info("Archive checksum (SHA256): %s", stats.Checksum)
+			if stats.BundleCreated {
+				logging.Info("Bundle path: %s", stats.ArchivePath)
+				logging.Info("Bundle contents: archive + checksum + metadata")
+			} else {
+				logging.Info("Archive path: %s", stats.ArchivePath)
+				if stats.ManifestPath != "" {
+					logging.Info("Manifest path: %s", stats.ManifestPath)
+				}
+				if stats.Checksum != "" {
+					logging.Info("Archive checksum (SHA256): %s", stats.Checksum)
+				}
 			}
 			fmt.Println()
 
 			logging.Info("✓ Go backup orchestration completed")
+			logServerIdentityValues(serverIDValue, serverMACValue)
 		} else {
 			logging.Info("Starting legacy bash backup orchestration...")
 			if err := orch.RunBackup(ctx, envInfo.Type); err != nil {
 				if ctx.Err() == context.Canceled {
 					logging.Warning("Backup was canceled")
-					os.Exit(128 + int(syscall.SIGINT))
+					return 128 + int(syscall.SIGINT)
 				}
 				logging.Error("Bash backup orchestration failed: %v", err)
-				os.Exit(types.ExitBackupError.Int())
+				return types.ExitBackupError.Int()
 			}
 			logging.Info("✓ Bash backup orchestration completed")
+			logServerIdentityValues(serverIDValue, serverMACValue)
 		}
 	} else {
 		logging.Warning("Backup is disabled in configuration")
@@ -359,7 +679,7 @@ func main() {
 
 	// Summary
 	fmt.Println("===========================================")
-	fmt.Println("Status: Phase 4.1 Collection")
+	fmt.Println("Status: Phase 5.1 Notifications")
 	fmt.Println("===========================================")
 	fmt.Println()
 	fmt.Println("Phase 2 (Complete):")
@@ -383,12 +703,17 @@ func main() {
 	}
 	fmt.Println()
 	fmt.Println("Phase 4 (Collection & Storage):")
-	fmt.Println("  ✓ 4.1 - Collector Go allineati al Bash")
-	fmt.Println("  → Storage operations (4.2)")
+	fmt.Println("  ✓ 4.1 - Collection (PVE/PBS/System)")
+	fmt.Println("  ✓ 4.2 - Storage (Local/Secondary/Cloud)")
+	fmt.Println()
+	fmt.Println("Phase 5 (Notifications & Metrics):")
+	fmt.Println("  ✓ 5.1 - Notifications (Telegram/Email)")
+	fmt.Println("  → 5.2 - Metrics (Prometheus)")
 	fmt.Println()
 	fmt.Println("Fasi successive:")
-	fmt.Println("  → Notifications (Telegram/Email)")
 	fmt.Println("  → Metrics Prometheus")
+	fmt.Println("  → Performance benchmarks")
+	fmt.Println("  → Complete test coverage")
 	fmt.Println()
 	fmt.Println("Commands:")
 	fmt.Println("  make test          - Run all tests")
@@ -396,6 +721,8 @@ func main() {
 	fmt.Println("  --help             - Show all options")
 	fmt.Println("  --dry-run          - Test without changes")
 	fmt.Println()
+
+	return types.ExitSuccess.Int()
 }
 
 // formatBytes formats bytes in human-readable format
@@ -421,6 +748,17 @@ func formatDuration(d time.Duration) string {
 		return fmt.Sprintf("%.1fm", d.Minutes())
 	}
 	return fmt.Sprintf("%.1fh", d.Hours())
+}
+
+func logServerIdentityValues(serverID, mac string) {
+	serverID = strings.TrimSpace(serverID)
+	mac = strings.TrimSpace(mac)
+	if serverID != "" {
+		logging.Info("Server ID: %s", serverID)
+	}
+	if mac != "" {
+		logging.Info("Server MAC Address: %s", mac)
+	}
 }
 
 func resolveHostname() string {
@@ -451,14 +789,14 @@ func validateFutureFeatures(cfg *config.Config) error {
 	if cfg.CloudEnabled && cfg.CloudRemote == "" {
 		return fmt.Errorf("cloud backup enabled but CLOUD_REMOTE is empty")
 	}
-	if cfg.TelegramEnabled {
-		if cfg.TelegramToken == "" || cfg.TelegramChatID == "" {
-			return fmt.Errorf("telegram notifications enabled but TELEGRAM_TOKEN or TELEGRAM_CHAT_ID missing")
+	// Telegram validation - only for personal mode
+	if cfg.TelegramEnabled && cfg.TelegramBotType == "personal" {
+		if cfg.TelegramBotToken == "" || cfg.TelegramChatID == "" {
+			return fmt.Errorf("telegram personal mode enabled but TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID missing")
 		}
 	}
-	if cfg.EmailEnabled && cfg.EmailRecipients == "" {
-		return fmt.Errorf("email notifications enabled but EMAIL_RECIPIENTS is empty")
-	}
+	// Email recipient validation - auto-detection is allowed
+	// No validation needed here as email notifier will handle it
 	if cfg.MetricsEnabled && cfg.MetricsPath == "" {
 		return fmt.Errorf("metrics enabled but METRICS_PATH is empty")
 	}
@@ -504,6 +842,99 @@ func detectBaseDir() (string, bool) {
 	}
 
 	return originalDir, true
+}
+
+func detectFilesystemInfo(ctx context.Context, backend storage.Storage, path string, logger *logging.Logger) (*storage.FilesystemInfo, error) {
+	if backend == nil || !backend.IsEnabled() {
+		return nil, nil
+	}
+
+	fsInfo, err := backend.DetectFilesystem(ctx)
+	if err != nil {
+		if backend.IsCritical() {
+			return nil, err
+		}
+		logger.Warning("WARNING: %s filesystem detection failed: %v", backend.Name(), err)
+		return nil, nil
+	}
+
+	if !fsInfo.SupportsOwnership {
+		logger.Warning("%s [%s] does not support ownership changes; chown/chmod will be skipped", path, fsInfo.Type)
+	}
+
+	return fsInfo, nil
+}
+
+func formatStorageLabel(path string, info *storage.FilesystemInfo) string {
+	fsType := "unknown"
+	if info != nil && info.Type != "" {
+		fsType = string(info.Type)
+	}
+	return fmt.Sprintf("%s [%s]", path, fsType)
+}
+
+func formatDetailedFilesystemLabel(path string, info *storage.FilesystemInfo) string {
+	cleanPath := strings.TrimSpace(path)
+	if cleanPath == "" {
+		return "disabled"
+	}
+	if info == nil {
+		return fmt.Sprintf("%s -> Filesystem: unknown (detection unavailable)", cleanPath)
+	}
+
+	ownership := "no ownership"
+	if info.SupportsOwnership {
+		ownership = "supports ownership"
+	}
+
+	network := ""
+	if info.IsNetworkFS {
+		network = " [network]"
+	}
+
+	mount := info.MountPoint
+	if mount == "" {
+		mount = "unknown"
+	}
+
+	return fmt.Sprintf("%s -> Filesystem: %s (%s)%s [mount: %s]",
+		cleanPath,
+		info.Type,
+		ownership,
+		network,
+		mount,
+	)
+}
+
+func fetchStorageStats(ctx context.Context, backend storage.Storage, logger *logging.Logger, label string) *storage.StorageStats {
+	if ctx.Err() != nil || backend == nil || !backend.IsEnabled() {
+		return nil
+	}
+	stats, err := backend.GetStats(ctx)
+	if err != nil {
+		logger.Debug("%s: unable to gather stats: %v", label, err)
+		return nil
+	}
+	return stats
+}
+
+func formatStorageInitSummary(name string, retention int, stats *storage.StorageStats) string {
+	retentionStr := fmt.Sprintf("retention %s", formatBackupNoun(retention))
+	if stats == nil {
+		return fmt.Sprintf("✓ %s initialized (%s)", name, retentionStr)
+	}
+	return fmt.Sprintf("✓ %s initialized (present %s, %s)",
+		name,
+		formatBackupNoun(stats.TotalBackups),
+		retentionStr,
+	)
+}
+
+func formatBackupNoun(n int) string {
+	if n == 1 {
+		return "1 backup"
+	}
+	return fmt.Sprintf("%d backups", n)
 }
 
 func cleanupAfterRun(logger *logging.Logger) {

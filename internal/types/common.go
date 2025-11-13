@@ -76,6 +76,31 @@ type BackupInfo struct {
 	ProxmoxType ProxmoxType
 }
 
+// BackupMetadata contains metadata about a backup file
+// Used by storage backends to track backup files
+type BackupMetadata struct {
+	// BackupFile is the full path to the backup file
+	BackupFile string
+
+	// Timestamp is when the backup was created
+	Timestamp time.Time
+
+	// Size is the file size in bytes
+	Size int64
+
+	// Checksum is the SHA256 checksum of the backup file
+	Checksum string
+
+	// ProxmoxType is the type of Proxmox environment (PVE/PBS)
+	ProxmoxType ProxmoxType
+
+	// Compression is the compression type used
+	Compression CompressionType
+
+	// Version is the backup format version
+	Version string
+}
+
 // StorageLocation rappresenta una destinazione di storage
 type StorageLocation string
 

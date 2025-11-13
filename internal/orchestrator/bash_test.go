@@ -257,22 +257,26 @@ func TestSaveStatsReportDryRun(t *testing.T) {
 	orch := New(logger, "/test/path", true)
 
 	tempDir := t.TempDir()
-	orch.SetBackupConfig(tempDir, tempDir, types.CompressionGzip, 6, 0, nil)
+	orch.SetBackupConfig(tempDir, tempDir, types.CompressionGzip, 6, 0, "standard", nil)
 
+	now := time.Now()
 	stats := &BackupStats{
-		Hostname:             "test-host",
-		ProxmoxType:          types.ProxmoxVE,
-		Timestamp:            "20240101-010101",
-		StartTime:            time.Now(),
-		EndTime:              time.Now().Add(time.Second),
-		Duration:             time.Second,
-		FilesCollected:       10,
-		BytesCollected:       1024,
-		ArchiveSize:          512,
-		ArchivePath:          filepath.Join(tempDir, "archive.tar.gz"),
-		RequestedCompression: types.CompressionGzip,
-		Compression:          types.CompressionGzip,
-		CompressionLevel:     6,
+		Hostname:                 "test-host",
+		ProxmoxType:              types.ProxmoxVE,
+		Timestamp:                now,
+		StartTime:                now,
+		EndTime:                  time.Now().Add(time.Second),
+		Duration:                 time.Second,
+		FilesCollected:           10,
+		BytesCollected:           1024,
+		ArchiveSize:              512,
+		ArchivePath:              filepath.Join(tempDir, "archive.tar.gz"),
+		RequestedCompression:     types.CompressionGzip,
+		RequestedCompressionMode: "standard",
+		Compression:              types.CompressionGzip,
+		CompressionLevel:         6,
+		CompressionMode:          "standard",
+		CompressionThreads:       0,
 	}
 
 	if err := orch.SaveStatsReport(stats); err != nil {
@@ -293,23 +297,26 @@ func TestSaveStatsReportReal(t *testing.T) {
 	orch := New(logger, "/test/path", false)
 
 	tempDir := t.TempDir()
-	orch.SetBackupConfig(tempDir, tempDir, types.CompressionXZ, 9, 0, nil)
+	orch.SetBackupConfig(tempDir, tempDir, types.CompressionXZ, 9, 0, "ultra", nil)
 
 	now := time.Now()
 	stats := &BackupStats{
-		Hostname:             "pbs-test",
-		ProxmoxType:          types.ProxmoxBS,
-		Timestamp:            now.Format("20060102-150405"),
-		StartTime:            now,
-		EndTime:              now.Add(2 * time.Second),
-		Duration:             2 * time.Second,
-		FilesCollected:       5,
-		BytesCollected:       2048,
-		ArchiveSize:          1024,
-		ArchivePath:          filepath.Join(tempDir, "archive.tar.xz"),
-		RequestedCompression: types.CompressionXZ,
-		Compression:          types.CompressionXZ,
-		CompressionLevel:     9,
+		Hostname:                 "pbs-test",
+		ProxmoxType:              types.ProxmoxBS,
+		Timestamp:                now,
+		StartTime:                now,
+		EndTime:                  now.Add(2 * time.Second),
+		Duration:                 2 * time.Second,
+		FilesCollected:           5,
+		BytesCollected:           2048,
+		ArchiveSize:              1024,
+		ArchivePath:              filepath.Join(tempDir, "archive.tar.xz"),
+		RequestedCompression:     types.CompressionXZ,
+		RequestedCompressionMode: "ultra",
+		Compression:              types.CompressionXZ,
+		CompressionLevel:         9,
+		CompressionMode:          "ultra",
+		CompressionThreads:       0,
 	}
 
 	if err := orch.SaveStatsReport(stats); err != nil {
@@ -395,19 +402,9 @@ func TestDispatchPostBackupNotificationError(t *testing.T) {
 	orch := New(logger, "/tmp", false)
 	orch.RegisterNotificationChannel(&mockNotifier{err: errors.New("notify failure")})
 
+	// Notifications are non-critical: errors should NOT abort backup
 	err := orch.dispatchPostBackup(context.Background(), &BackupStats{})
-	if err == nil {
-		t.Fatal("expected error when notification channel fails")
-	}
-
-	var backupErr *BackupError
-	if !errors.As(err, &backupErr) {
-		t.Fatalf("expected BackupError, got %T", err)
-	}
-	if backupErr.Phase != "notification" {
-		t.Errorf("unexpected phase: %s", backupErr.Phase)
-	}
-	if backupErr.Code != types.ExitNetworkError {
-		t.Errorf("unexpected exit code: %d", backupErr.Code)
+	if err != nil {
+		t.Fatalf("notification errors should not abort backup, got: %v", err)
 	}
 }

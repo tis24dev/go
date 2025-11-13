@@ -4,14 +4,17 @@ import (
 	"archive/tar"
 	"compress/gzip"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
+	"filippo.io/age"
 	"github.com/tis24dev/proxmox-backup/internal/logging"
 	"github.com/tis24dev/proxmox-backup/internal/types"
 )
@@ -200,6 +203,71 @@ func TestResolveCompressionFallbackToGzip(t *testing.T) {
 	}
 	if archiver.CompressionLevel() < 1 || archiver.CompressionLevel() > 9 {
 		t.Fatalf("gzip compression level should be normalized to 1-9, got %d", archiver.CompressionLevel())
+	}
+}
+
+func TestBuildXZArgs(t *testing.T) {
+	tests := []struct {
+		name     string
+		level    int
+		threads  int
+		mode     string
+		expected []string
+	}{
+		{
+			name:     "standard auto threads",
+			level:    6,
+			threads:  0,
+			mode:     "standard",
+			expected: []string{"-6", "-T0", "-c"},
+		},
+		{
+			name:     "ultra with threads",
+			level:    9,
+			threads:  4,
+			mode:     "ultra",
+			expected: []string{"-9", "-T4", "--extreme", "-c"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			args := buildXZArgs(tt.level, tt.threads, tt.mode)
+			if !reflect.DeepEqual(args, tt.expected) {
+				t.Fatalf("buildXZArgs(%d,%d,%s) = %#v; want %#v", tt.level, tt.threads, tt.mode, args, tt.expected)
+			}
+		})
+	}
+}
+
+func TestBuildZstdArgs(t *testing.T) {
+	tests := []struct {
+		name     string
+		level    int
+		threads  int
+		expected []string
+	}{
+		{
+			name:     "standard level",
+			level:    15,
+			threads:  2,
+			expected: []string{"-15", "-T2", "-q", "-c"},
+		},
+		{
+			name:     "ultra level",
+			level:    22,
+			threads:  0,
+			expected: []string{"--ultra", "-22", "-T0", "-q", "-c"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			args := buildZstdArgs(tt.level, tt.threads)
+			if !reflect.DeepEqual(args, tt.expected) {
+				t.Fatalf("buildZstdArgs(%d,%d) = %#v; want %#v", tt.level, tt.threads, args, tt.expected)
+			}
+		})
 	}
 }
 
@@ -410,5 +478,109 @@ func verifyTarContent(tarPath string, expectedFiles []string) error {
 		}
 	}
 
+	return nil
+}
+
+func TestEncryptedArchiveCanBeDecrypted(t *testing.T) {
+	logger := logging.New(types.LogLevelInfo, false)
+	identity, err := age.GenerateX25519Identity()
+	if err != nil {
+		t.Fatalf("generate identity: %v", err)
+	}
+
+	config := &ArchiverConfig{
+		Compression:    types.CompressionNone,
+		EncryptArchive: true,
+		AgeRecipients:  []age.Recipient{identity.Recipient()},
+	}
+	archiver := NewArchiver(logger, config)
+
+	tempDir := t.TempDir()
+	sourceDir := filepath.Join(tempDir, "data")
+	if err := os.MkdirAll(sourceDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sourceDir, "file.txt"), []byte("secret data"), 0o644); err != nil {
+		t.Fatalf("write sample: %v", err)
+	}
+
+	outputPath := filepath.Join(tempDir, "backup.tar.age")
+	if err := archiver.CreateArchive(context.Background(), sourceDir, outputPath); err != nil {
+		t.Fatalf("CreateArchive: %v", err)
+	}
+
+	decryptedPath := filepath.Join(tempDir, "decrypted.tar")
+	if err := decryptArchiveForTest(outputPath, decryptedPath, identity); err != nil {
+		t.Fatalf("decrypt archive: %v", err)
+	}
+
+	if err := verifyTarContent(decryptedPath, []string{"file.txt"}); err != nil {
+		t.Fatalf("verify decrypted tar: %v", err)
+	}
+}
+
+func TestEncryptedArchiveRejectsWrongIdentity(t *testing.T) {
+	logger := logging.New(types.LogLevelInfo, false)
+	correctIdentity, err := age.GenerateX25519Identity()
+	if err != nil {
+		t.Fatalf("generate identity: %v", err)
+	}
+	wrongIdentity, err := age.GenerateX25519Identity()
+	if err != nil {
+		t.Fatalf("generate wrong identity: %v", err)
+	}
+
+	config := &ArchiverConfig{
+		Compression:    types.CompressionNone,
+		EncryptArchive: true,
+		AgeRecipients:  []age.Recipient{correctIdentity.Recipient()},
+	}
+	archiver := NewArchiver(logger, config)
+
+	tempDir := t.TempDir()
+	sourceDir := filepath.Join(tempDir, "data")
+	if err := os.MkdirAll(sourceDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sourceDir, "file.txt"), []byte("secret data"), 0o644); err != nil {
+		t.Fatalf("write sample: %v", err)
+	}
+
+	outputPath := filepath.Join(tempDir, "backup.tar.age")
+	if err := archiver.CreateArchive(context.Background(), sourceDir, outputPath); err != nil {
+		t.Fatalf("CreateArchive: %v", err)
+	}
+
+	err = decryptArchiveForTest(outputPath, filepath.Join(tempDir, "fail.tar"), wrongIdentity)
+	if err == nil {
+		t.Fatalf("expected decryption failure with wrong identity")
+	}
+	var noMatch *age.NoIdentityMatchError
+	if !errors.Is(err, age.ErrIncorrectIdentity) && !errors.As(err, &noMatch) {
+		t.Fatalf("expected identity mismatch error, got %v", err)
+	}
+}
+
+func decryptArchiveForTest(src, dst string, identity age.Identity) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+
+	reader, err := age.Decrypt(in, identity)
+	if err != nil {
+		return err
+	}
+
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o640)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+
+	if _, err := io.Copy(out, reader); err != nil {
+		return err
+	}
 	return nil
 }

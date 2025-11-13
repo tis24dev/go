@@ -28,7 +28,7 @@ func TestRunGoBackupEndToEnd(t *testing.T) {
 	logDir := t.TempDir()
 
 	orch := New(logger, "/nonexistent", false)
-	orch.SetBackupConfig(backupDir, logDir, types.CompressionNone, 0, 0, nil)
+	orch.SetBackupConfig(backupDir, logDir, types.CompressionNone, 0, 0, "standard", nil)
 
 	checkerConfig := &checks.CheckerConfig{
 		BackupPath:         backupDir,
@@ -101,6 +101,21 @@ func TestRunGoBackupEndToEnd(t *testing.T) {
 	} else if val != string(stats.Compression) {
 		t.Errorf("compression mismatch: got %s want %s", val, stats.Compression)
 	}
+	if val, ok := report["requested_compression_mode"].(string); !ok || val == "" {
+		t.Error("requested_compression_mode missing or empty in report")
+	} else if val != stats.RequestedCompressionMode {
+		t.Errorf("requested_compression_mode mismatch: got %s want %s", val, stats.RequestedCompressionMode)
+	}
+	if val, ok := report["compression_mode"].(string); !ok || val == "" {
+		t.Error("compression_mode missing or empty in report")
+	} else if val != stats.CompressionMode {
+		t.Errorf("compression_mode mismatch: got %s want %s", val, stats.CompressionMode)
+	}
+	if val, ok := report["compression_threads"].(float64); !ok {
+		t.Error("compression_threads missing in report")
+	} else if int(val) != stats.CompressionThreads {
+		t.Errorf("compression_threads mismatch: got %d want %d", int(val), stats.CompressionThreads)
+	}
 
 	if stats.ManifestPath == "" {
 		t.Fatal("ManifestPath should not be empty")
@@ -125,6 +140,9 @@ func TestRunGoBackupEndToEnd(t *testing.T) {
 	if stats.Compression != types.CompressionNone {
 		t.Errorf("Expected effective compression none, got %s", stats.Compression)
 	}
+	if manifest.CompressionMode != stats.CompressionMode {
+		t.Errorf("Manifest compression mode mismatch: got %s want %s", manifest.CompressionMode, stats.CompressionMode)
+	}
 }
 
 func TestRunGoBackupFallbackCompression(t *testing.T) {
@@ -138,7 +156,7 @@ func TestRunGoBackupFallbackCompression(t *testing.T) {
 	logDir := t.TempDir()
 
 	orch := New(logger, "/nonexistent", false)
-	orch.SetBackupConfig(backupDir, logDir, types.CompressionXZ, 6, 0, nil)
+	orch.SetBackupConfig(backupDir, logDir, types.CompressionXZ, 6, 0, "ultra", nil)
 
 	checkerConfig := &checks.CheckerConfig{
 		BackupPath:         backupDir,

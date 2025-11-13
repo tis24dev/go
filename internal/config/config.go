@@ -15,11 +15,19 @@ import (
 // Config contiene tutta la configurazione del sistema di backup
 type Config struct {
 	// General settings
-	BackupEnabled  bool
-	DebugLevel     types.LogLevel
-	UseColor       bool
-	EnableGoBackup bool
-	BaseDir        string
+	BackupEnabled            bool
+	DebugLevel               types.LogLevel
+	UseColor                 bool
+	ColorizeStepLogs         bool
+	EnableGoBackup           bool
+	BaseDir                  string
+	SecurityCheckEnabled     bool
+	AbortOnSecurityIssues    bool
+	AutoUpdateHashes         bool
+	AutoFixPermissions       bool
+	ContinueOnSecurityIssues bool
+	SuspiciousProcesses      []string
+	SafeBracketProcesses     []string
 
 	// Compression settings
 	CompressionType    types.CompressionType
@@ -42,10 +50,12 @@ type Config struct {
 	PrefilterMaxFileSizeMB int
 
 	// Paths
-	BackupPath    string
-	LogPath       string
-	LockPath      string
-	SecureAccount string
+	BackupPath       string
+	LogPath          string
+	SecondaryLogPath string
+	CloudLogPath     string
+	LockPath         string
+	SecureAccount    string
 
 	// Storage settings
 	SecondaryEnabled bool
@@ -53,21 +63,75 @@ type Config struct {
 	CloudEnabled     bool
 	CloudRemote      string
 
+	// Rclone settings with comprehensible timeout names
+	// RcloneTimeoutConnection: timeout for checking if remote is accessible (default: 30s)
+	// RcloneTimeoutOperation: timeout for full upload/download operations (default: 300s)
+	RcloneTimeoutConnection int
+	RcloneTimeoutOperation  int
+	RcloneBandwidthLimit    string
+	RcloneTransfers         int
+	RcloneRetries           int
+	RcloneVerifyMethod      string // "primary" or "alternative"
+
 	// Retention settings
 	LocalRetentionDays     int
 	SecondaryRetentionDays int
 	CloudRetentionDays     int
+	MaxLocalBackups        int
+	MaxSecondaryBackups    int
+	MaxCloudBackups        int
 
-	// Notifications
-	TelegramEnabled bool
-	TelegramToken   string
-	TelegramChatID  string
-	EmailEnabled    bool
-	EmailRecipients string
+	// Batch deletion settings (cloud storage)
+	CloudBatchSize  int // Number of files to delete per batch (default: 20)
+	CloudBatchPause int // Pause in seconds between batches (default: 1)
+
+	// Bundle settings for associated files
+	BundleAssociatedFiles bool // Bundle .tar.xz + .sha256 + .metadata into single archive
+	EncryptArchive        bool
+	AgeRecipients         []string
+	AgeRecipientFile      string
+
+	// Telegram Notifications
+	TelegramEnabled       bool
+	TelegramBotType       string // "personal" or "centralized"
+	TelegramBotToken      string // For personal mode
+	TelegramChatID        string // For personal mode
+	TelegramServerAPIHost string // For centralized mode
+	ServerID              string // Server identifier for centralized mode
+
+	// Email Notifications
+	EmailEnabled          bool
+	EmailDeliveryMethod   string // "relay" or "sendmail"
+	EmailFallbackSendmail bool
+	EmailRecipient        string // Single recipient, empty = auto-detect
+	EmailFrom             string
+
+	// Cloud Relay Configuration (hardcoded for compatibility)
+	CloudflareWorkerURL   string
+	CloudflareWorkerToken string
+	CloudflareHMACSecret  string
+	WorkerTimeout         int // seconds
+	WorkerMaxRetries      int
+	WorkerRetryDelay      int // seconds
+
+	// Webhook Notifications
+	WebhookEnabled       bool
+	WebhookEndpointNames []string // List of endpoint names to configure
+	WebhookDefaultFormat string   // Default format for all endpoints
+	WebhookTimeout       int      // Timeout in seconds
+	WebhookMaxRetries    int      // Max retry attempts
+	WebhookRetryDelay    int      // Delay between retries in seconds
 
 	// Metrics
 	MetricsEnabled bool
 	MetricsPath    string
+
+	// Security features
+	CheckNetworkSecurity bool
+	CheckFirewall        bool
+	CheckOpenPorts       bool
+	SuspiciousPorts      []int
+	PortWhitelist        []string
 
 	// Collector options
 	ExcludePatterns []string
@@ -93,6 +157,8 @@ type Config struct {
 	BackupTapeConfigs      bool
 	BackupPruneSchedules   bool
 	BackupPxarFiles        bool
+	PxarDatastoreConcurrency int
+	PxarIntraConcurrency     int
 
 	// System collection options
 	BackupNetworkConfigs    bool
@@ -114,6 +180,11 @@ type Config struct {
 
 	CustomBackupPaths []string
 	BackupBlacklist   []string
+
+	// PBS Authentication (auto-detected, no manual input required)
+	PBSRepository  string // Auto-detected from environment or generated
+	PBSPassword    string // Auto-detected API token secret
+	PBSFingerprint string // Auto-detected from PBS certificate
 
 	// raw configuration map
 	raw map[string]string
@@ -137,6 +208,13 @@ func LoadConfig(configPath string) (*Config, error) {
 
 	scanner := bufio.NewScanner(file)
 	lineNum := 0
+	multiValueKeys := map[string]bool{
+		"BACKUP_EXCLUDE_PATTERNS": true,
+		"CUSTOM_BACKUP_PATHS":     true,
+		"BACKUP_BLACKLIST":        true,
+		"AGE_RECIPIENT":           true,
+	}
+
 	for scanner.Scan() {
 		lineNum++
 		line := scanner.Text()
@@ -153,7 +231,15 @@ func LoadConfig(configPath string) (*Config, error) {
 			continue
 		}
 
-		cfg.raw[key] = value
+		if multiValueKeys[key] {
+			if existing, ok := cfg.raw[key]; ok && existing != "" {
+				cfg.raw[key] = existing + "\n" + value
+			} else {
+				cfg.raw[key] = value
+			}
+		} else {
+			cfg.raw[key] = value
+		}
 	}
 
 	if err := scanner.Err(); err != nil {
@@ -183,6 +269,7 @@ func (c *Config) parse() error {
 	} else {
 		c.UseColor = c.getBool("USE_COLOR", true)
 	}
+	c.ColorizeStepLogs = c.getBool("COLORIZE_STEP_LOGS", true) && c.UseColor
 
 	// Compression
 	c.CompressionType = c.getCompressionType("COMPRESSION_TYPE", types.CompressionXZ)
@@ -226,9 +313,45 @@ func (c *Config) parse() error {
 	}
 	_ = os.Setenv("BASE_DIR", c.BaseDir)
 
+	// Security controls
+	c.SecurityCheckEnabled = c.getBoolWithFallback([]string{"SECURITY_CHECK_ENABLED", "FULL_SECURITY_CHECK"}, true)
+	c.AutoUpdateHashes = c.getBool("AUTO_UPDATE_HASHES", true)
+	c.AutoFixPermissions = c.getBool("AUTO_FIX_PERMISSIONS", false)
+	if val, ok := c.raw["CONTINUE_ON_SECURITY_ISSUES"]; ok {
+		c.ContinueOnSecurityIssues = utils.ParseBool(val)
+		c.AbortOnSecurityIssues = !c.ContinueOnSecurityIssues
+	} else if val, ok := c.raw["ABORT_ON_SECURITY_ISSUES"]; ok {
+		c.AbortOnSecurityIssues = utils.ParseBool(val)
+		c.ContinueOnSecurityIssues = !c.AbortOnSecurityIssues
+	} else {
+		c.ContinueOnSecurityIssues = false
+		c.AbortOnSecurityIssues = true
+	}
+	c.CheckNetworkSecurity = c.getBool("CHECK_NETWORK_SECURITY", false)
+	c.CheckFirewall = c.getBool("CHECK_FIREWALL", false)
+	c.CheckOpenPorts = c.getBool("CHECK_OPEN_PORTS", false)
+	c.SuspiciousPorts = c.getIntList("SUSPICIOUS_PORTS", []int{6666, 6665, 1337, 31337, 4444, 5555, 4242, 6324, 8888, 2222, 3389, 5900})
+	c.PortWhitelist = c.getStringSlice("PORT_WHITELIST", nil)
+	c.SuspiciousProcesses = c.getStringSlice("SUSPICIOUS_PROCESSES", []string{
+		"ncat", "cryptominer", "xmrig", "kdevtmpfsi", "kinsing", "minerd", "mr.sh",
+	})
+	c.SafeBracketProcesses = c.getStringSlice("SAFE_BRACKET_PROCESSES", []string{
+		"sshd:", "systemd", "cron", "rsyslogd", "dbus-daemon",
+		"zvol_tq*", "arc_*", "dbu_*", "dbuf_*", "l2arc_feed", "lockd", "nfsd*", "nfsv4 callback*",
+	})
+
+	c.EncryptArchive = c.getBool("ENCRYPT_ARCHIVE", false)
+	c.AgeRecipientFile = strings.TrimSpace(c.getString("AGE_RECIPIENT_FILE", ""))
+	c.AgeRecipients = c.getStringSlice("AGE_RECIPIENT", nil)
+	if len(c.AgeRecipients) == 0 {
+		c.AgeRecipients = c.getStringSlice("AGE_RECIPIENTS", nil)
+	}
+
 	// Paths: supporta LOCAL_BACKUP_PATH o BACKUP_PATH
 	c.BackupPath = c.getStringWithFallback([]string{"LOCAL_BACKUP_PATH", "BACKUP_PATH"}, filepath.Join(c.BaseDir, "backup"))
 	c.LogPath = c.getStringWithFallback([]string{"LOCAL_LOG_PATH", "LOG_PATH"}, filepath.Join(c.BaseDir, "log"))
+	c.SecondaryLogPath = c.getString("SECONDARY_LOG_PATH", "")
+	c.CloudLogPath = c.getString("CLOUD_LOG_PATH", "")
 	c.LockPath = c.getString("LOCK_PATH", filepath.Join(c.BaseDir, "lock"))
 	c.SecureAccount = c.getString("SECURE_ACCOUNT", filepath.Join(c.BaseDir, "secure_account"))
 
@@ -239,19 +362,78 @@ func (c *Config) parse() error {
 	c.CloudEnabled = c.getBoolWithFallback([]string{"ENABLE_CLOUD_BACKUP", "CLOUD_ENABLED"}, false)
 	c.CloudRemote = c.getStringWithFallback([]string{"RCLONE_REMOTE", "CLOUD_REMOTE"}, "")
 
+	// Rclone settings with comprehensible timeout names
+	c.RcloneTimeoutConnection = c.getInt("RCLONE_TIMEOUT_CONNECTION", 30)
+	c.RcloneTimeoutOperation = c.getInt("RCLONE_TIMEOUT_OPERATION", 300)
+	c.RcloneBandwidthLimit = c.getString("RCLONE_BANDWIDTH_LIMIT", "")
+	c.RcloneTransfers = c.getInt("RCLONE_TRANSFERS", 4)
+	c.RcloneRetries = c.getInt("RCLONE_RETRIES", 3)
+	c.RcloneVerifyMethod = strings.ToLower(c.getString("RCLONE_VERIFY_METHOD", "primary"))
+
 	// Retention: supporta MAX_LOCAL_BACKUPS o LOCAL_RETENTION_DAYS
 	c.LocalRetentionDays = c.getIntWithFallback([]string{"MAX_LOCAL_BACKUPS", "LOCAL_RETENTION_DAYS"}, 7)
 	c.SecondaryRetentionDays = c.getIntWithFallback([]string{"MAX_SECONDARY_BACKUPS", "SECONDARY_RETENTION_DAYS"}, 14)
 	c.CloudRetentionDays = c.getIntWithFallback([]string{"MAX_CLOUD_BACKUPS", "CLOUD_RETENTION_DAYS"}, 30)
+	c.MaxLocalBackups = c.LocalRetentionDays
+	c.MaxSecondaryBackups = c.SecondaryRetentionDays
+	c.MaxCloudBackups = c.CloudRetentionDays
+
+	// Batch deletion settings for cloud storage (avoid API rate limits)
+	c.CloudBatchSize = c.getInt("CLOUD_BATCH_SIZE", 20)
+	if c.CloudBatchSize <= 0 {
+		c.CloudBatchSize = 20
+	}
+	c.CloudBatchPause = c.getInt("CLOUD_BATCH_PAUSE", 1)
+	if c.CloudBatchPause < 0 {
+		c.CloudBatchPause = 1
+	}
+
+	// Bundle associated files into single archive
+	c.BundleAssociatedFiles = c.getBool("BUNDLE_ASSOCIATED_FILES", true)
 
 	c.SafetyFactor = 1.5
 
-	// Notifications
+	// Telegram Notifications
 	c.TelegramEnabled = c.getBool("TELEGRAM_ENABLED", false)
-	c.TelegramToken = c.getString("TELEGRAM_TOKEN", "")
+	c.TelegramBotType = c.getString("BOT_TELEGRAM_TYPE", "centralized")
+	c.TelegramBotToken = c.getString("TELEGRAM_BOT_TOKEN", "")
 	c.TelegramChatID = c.getString("TELEGRAM_CHAT_ID", "")
-	c.EmailEnabled = c.getBool("EMAIL_ENABLED", false)
-	c.EmailRecipients = c.getString("EMAIL_RECIPIENTS", "")
+	c.TelegramServerAPIHost = "https://bot.tis24.it:1443"
+	c.ServerID = ""
+
+	// Email Notifications
+	c.EmailEnabled = c.getBool("EMAIL_ENABLED", true)
+	c.EmailDeliveryMethod = c.getString("EMAIL_DELIVERY_METHOD", "relay")
+	c.EmailFallbackSendmail = c.getBool("EMAIL_FALLBACK_SENDMAIL", true)
+	c.EmailRecipient = c.getString("EMAIL_RECIPIENT", "")
+	c.EmailFrom = c.getString("EMAIL_FROM", "no-reply@proxmox.tis24.it")
+
+	// Cloud Relay Configuration (hardcoded for Bash compatibility)
+	c.CloudflareWorkerURL = "https://relay-tis24.weathered-hill-5216.workers.dev/send"
+	c.CloudflareWorkerToken = "v1_public_20251024"
+	c.CloudflareHMACSecret = "4cc8946c15338082674d7213aee19069571e1afe60ad21b44be4d68260486fb2" // From wrangler.jsonc
+	c.WorkerTimeout = 30
+	c.WorkerMaxRetries = 2
+	c.WorkerRetryDelay = 2
+
+	// Webhook Notifications
+	c.WebhookEnabled = c.getBool("WEBHOOK_ENABLED", false)
+	c.WebhookDefaultFormat = c.getString("WEBHOOK_FORMAT", "generic")
+	c.WebhookTimeout = c.getInt("WEBHOOK_TIMEOUT", 30)
+	c.WebhookMaxRetries = c.getInt("WEBHOOK_MAX_RETRIES", 3)
+	c.WebhookRetryDelay = c.getInt("WEBHOOK_RETRY_DELAY", 2)
+
+	// Parse webhook endpoint names (comma-separated)
+	endpointNames := c.getString("WEBHOOK_ENDPOINTS", "")
+	if endpointNames != "" {
+		c.WebhookEndpointNames = strings.Split(endpointNames, ",")
+		// Trim whitespace from each name
+		for i, name := range c.WebhookEndpointNames {
+			c.WebhookEndpointNames[i] = strings.TrimSpace(name)
+		}
+	} else {
+		c.WebhookEndpointNames = []string{}
+	}
 
 	// Metrics: supporta PROMETHEUS_ENABLED o METRICS_ENABLED
 	c.MetricsEnabled = c.getBoolWithFallback([]string{"PROMETHEUS_ENABLED", "METRICS_ENABLED"}, false)
@@ -284,6 +466,8 @@ func (c *Config) parse() error {
 	c.BackupTapeConfigs = c.getBool("BACKUP_TAPE_CONFIGS", true)
 	c.BackupPruneSchedules = c.getBool("BACKUP_PRUNE_SCHEDULES", true)
 	c.BackupPxarFiles = c.getBool("BACKUP_PXAR_FILES", true)
+	c.PxarDatastoreConcurrency = c.getInt("PXAR_SCAN_DS_CONCURRENCY", 3)
+	c.PxarIntraConcurrency = c.getInt("PXAR_SCAN_INTRA_CONCURRENCY", 4)
 
 	// System collection options
 	c.BackupNetworkConfigs = c.getBool("BACKUP_NETWORK_CONFIGS", true)
@@ -305,6 +489,9 @@ func (c *Config) parse() error {
 
 	c.CustomBackupPaths = normalizeList(c.getStringSlice("CUSTOM_BACKUP_PATHS", nil))
 	c.BackupBlacklist = normalizeList(c.getStringSlice("BACKUP_BLACKLIST", nil))
+
+	// Auto-detect PBS authentication (zero user input required)
+	c.autoDetectPBSAuth()
 
 	return nil
 }
@@ -332,6 +519,39 @@ func (c *Config) getInt(key string, defaultValue int) int {
 		}
 	}
 	return defaultValue
+}
+
+func (c *Config) getIntList(key string, defaultValue []int) []int {
+	val, ok := c.raw[key]
+	if !ok || strings.TrimSpace(val) == "" {
+		return append([]int(nil), defaultValue...)
+	}
+
+	parts := strings.FieldsFunc(val, func(r rune) bool {
+		switch r {
+		case ',', ';', '|', '\n', '\t', ' ':
+			return true
+		default:
+			return false
+		}
+	})
+
+	var result []int
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		part = strings.Trim(part, `"'`)
+		if num, err := strconv.Atoi(part); err == nil {
+			result = append(result, num)
+		}
+	}
+
+	if len(result) == 0 && len(defaultValue) > 0 {
+		return append([]int(nil), defaultValue...)
+	}
+	return result
 }
 
 func (c *Config) getLogLevel(key string, defaultValue types.LogLevel) types.LogLevel {
@@ -382,6 +602,7 @@ func (c *Config) getStringSlice(key string, defaultValue []string) []string {
 	var result []string
 	for _, part := range parts {
 		if trimmed := strings.TrimSpace(part); trimmed != "" {
+			trimmed = strings.Trim(trimmed, `"'`)
 			result = append(result, trimmed)
 		}
 	}
@@ -510,6 +731,215 @@ func normalizeList(values []string) []string {
 		return []string{}
 	}
 	return clean
+}
+
+// autoDetectPBSAuth automatically detects PBS authentication credentials
+// from environment variables, config files, or system defaults.
+// This function ensures ZERO manual user input is required.
+func (c *Config) autoDetectPBSAuth() {
+	// Priority 1: Check environment variables (set by systemd or shell)
+	if repo := os.Getenv("PBS_REPOSITORY"); repo != "" {
+		c.PBSRepository = repo
+	}
+	if pass := os.Getenv("PBS_PASSWORD"); pass != "" {
+		c.PBSPassword = pass
+	}
+	if fp := os.Getenv("PBS_FINGERPRINT"); fp != "" {
+		c.PBSFingerprint = fp
+	}
+
+	// Priority 2: Check config file for PBS credentials
+	if c.PBSRepository == "" {
+		c.PBSRepository = c.getString("PBS_REPOSITORY", "")
+	}
+	if c.PBSPassword == "" {
+		c.PBSPassword = c.getString("PBS_PASSWORD", "")
+	}
+	if c.PBSFingerprint == "" {
+		c.PBSFingerprint = c.getString("PBS_FINGERPRINT", "")
+	}
+
+	// Priority 3: Auto-detect from PBS system files
+	if c.PBSFingerprint == "" {
+		c.PBSFingerprint = autoDetectPBSFingerprint()
+	}
+
+	// Priority 4: Try to read API token from secure_account directory
+	if c.PBSPassword == "" && c.PBSRepository == "" {
+		token, secret := autoDetectPBSToken(c.SecureAccount)
+		if token != "" && secret != "" {
+			// Use the detected token
+			c.PBSRepository = fmt.Sprintf("%s@localhost", token)
+			c.PBSPassword = secret
+		}
+	}
+
+	// Note: If all detection fails, PBS client commands will fallback gracefully
+	// (see safeCmdOutputWithPBSAuth in collector.go)
+}
+
+// autoDetectPBSFingerprint tries to extract the SSL fingerprint from PBS certificate
+func autoDetectPBSFingerprint() string {
+	// Try to get fingerprint from PBS proxy certificate
+	certPaths := []string{
+		"/etc/proxmox-backup/proxy.pem",
+		"/etc/pve/pve-root-ca.pem",
+	}
+
+	for _, certPath := range certPaths {
+		if fp := extractFingerprintFromCert(certPath); fp != "" {
+			return fp
+		}
+	}
+
+	return ""
+}
+
+// extractFingerprintFromCert extracts SHA256 fingerprint from a certificate file
+func extractFingerprintFromCert(certPath string) string {
+	// This would require crypto/x509 parsing - for now return empty
+	// The fingerprint is optional and commands will work without it on localhost
+	return ""
+}
+
+// BuildWebhookConfig constructs a complete webhook configuration with all endpoints
+func (c *Config) BuildWebhookConfig() *WebhookConfig {
+	endpoints := []WebhookEndpoint{}
+
+	// Parse each configured endpoint
+	for _, name := range c.WebhookEndpointNames {
+		if name == "" {
+			continue
+		}
+
+		// Build environment variable prefix for this endpoint
+		prefix := fmt.Sprintf("WEBHOOK_%s_", strings.ToUpper(strings.ReplaceAll(name, "-", "_")))
+
+		// Parse endpoint configuration
+		url := c.getString(prefix+"URL", "")
+		if url == "" {
+			continue // Skip endpoints without URL
+		}
+
+		format := c.getString(prefix+"FORMAT", c.WebhookDefaultFormat)
+		method := c.getString(prefix+"METHOD", "POST")
+		authType := c.getString(prefix+"AUTH_TYPE", "none")
+
+		// Parse authentication
+		auth := WebhookAuth{
+			Type:   authType,
+			Token:  c.getString(prefix+"AUTH_TOKEN", ""),
+			User:   c.getString(prefix+"AUTH_USER", ""),
+			Pass:   c.getString(prefix+"AUTH_PASS", ""),
+			Secret: c.getString(prefix+"AUTH_SECRET", ""),
+		}
+
+		// Parse custom headers
+		headers := make(map[string]string)
+		headersStr := c.getString(prefix+"HEADERS", "")
+		if headersStr != "" {
+			// Format: "Key1:Value1,Key2:Value2"
+			pairs := strings.Split(headersStr, ",")
+			for _, pair := range pairs {
+				parts := strings.SplitN(strings.TrimSpace(pair), ":", 2)
+				if len(parts) == 2 {
+					headers[strings.TrimSpace(parts[0])] = strings.TrimSpace(parts[1])
+				}
+			}
+		}
+
+		endpoints = append(endpoints, WebhookEndpoint{
+			Name:    name,
+			URL:     url,
+			Format:  format,
+			Method:  method,
+			Headers: headers,
+			Auth:    auth,
+		})
+	}
+
+	return &WebhookConfig{
+		Enabled:       c.WebhookEnabled,
+		Endpoints:     endpoints,
+		DefaultFormat: c.WebhookDefaultFormat,
+		Timeout:       c.WebhookTimeout,
+		MaxRetries:    c.WebhookMaxRetries,
+		RetryDelay:    c.WebhookRetryDelay,
+	}
+}
+
+// WebhookConfig holds configuration for webhook notifications
+type WebhookConfig struct {
+	Enabled       bool
+	Endpoints     []WebhookEndpoint
+	DefaultFormat string
+	Timeout       int
+	MaxRetries    int
+	RetryDelay    int
+}
+
+// WebhookEndpoint represents a single webhook endpoint configuration
+type WebhookEndpoint struct {
+	Name         string
+	URL          string
+	Format       string
+	Method       string
+	Headers      map[string]string
+	Auth         WebhookAuth
+	CustomFields map[string]interface{}
+}
+
+// WebhookAuth holds authentication configuration for a webhook
+type WebhookAuth struct {
+	Type   string
+	Token  string
+	User   string
+	Pass   string
+	Secret string
+}
+
+// autoDetectPBSToken tries to read API token from secure_account directory
+func autoDetectPBSToken(secureAccountPath string) (token, secret string) {
+	if secureAccountPath == "" {
+		secureAccountPath = "/opt/proxmox-backup/secure_account"
+	}
+
+	// Try multiple possible token file locations
+	tokenFiles := []string{
+		filepath.Join(secureAccountPath, "pbs_token"),
+		filepath.Join(secureAccountPath, "pbs_api_token"),
+		"/root/.pbs-token", // Alternative location
+	}
+
+	for _, tokenFile := range tokenFiles {
+		if utils.FileExists(tokenFile) {
+			if data, err := os.ReadFile(tokenFile); err == nil {
+				lines := strings.Split(string(data), "\n")
+				for _, line := range lines {
+					line = strings.TrimSpace(line)
+					if line == "" || strings.HasPrefix(line, "#") {
+						continue
+					}
+					// Format: token_name=token_secret or just token_secret
+					if strings.Contains(line, "=") {
+						parts := strings.SplitN(line, "=", 2)
+						if len(parts) == 2 {
+							token = strings.TrimSpace(parts[0])
+							secret = strings.TrimSpace(parts[1])
+							return
+						}
+					} else {
+						// Just the secret, use default token name
+						secret = line
+						token = "backup@pbs!go-client" // Default token
+						return
+					}
+				}
+			}
+		}
+	}
+
+	return "", ""
 }
 
 // expandEnvVars expands environment variables and special variables like ${BASE_DIR}

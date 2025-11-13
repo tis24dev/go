@@ -13,70 +13,103 @@ import (
 // CollectSystemInfo collects common system information (both PVE and PBS)
 func (c *Collector) CollectSystemInfo(ctx context.Context) error {
 	c.logger.Info("Collecting system information")
+	c.logger.Debug("Preparing filesystem context for system collection (tempDir=%s)", c.tempDir)
 
 	ensureSystemPath()
+	c.logger.Debug("System PATH verified for command execution")
 
 	// Collect system directories
+	c.logger.Debug("Collecting system directories (network, apt, cron, services, ssl, kernel, firewall, etc.)")
 	if err := c.collectSystemDirectories(ctx); err != nil {
 		return fmt.Errorf("failed to collect system directories: %w", err)
 	}
+	c.logger.Debug("System directories collection completed")
 
 	// Collect system commands output
+	c.logger.Debug("Collecting system command outputs and runtime state")
 	if err := c.collectSystemCommands(ctx); err != nil {
 		return fmt.Errorf("failed to collect system commands: %w", err)
 	}
+	c.logger.Debug("System command collection completed")
 
 	// Collect kernel information
+	c.logger.Debug("Collecting kernel information (uname/modules)")
 	if err := c.collectKernelInfo(ctx); err != nil {
 		c.logger.Warning("Failed to collect kernel info: %v", err)
 		// Non-fatal, continue
+	} else {
+		c.logger.Debug("Kernel information collected successfully")
 	}
 
 	// Collect hardware information
+	c.logger.Debug("Collecting hardware inventory (CPU/memory/devices)")
 	if err := c.collectHardwareInfo(ctx); err != nil {
 		c.logger.Warning("Failed to collect hardware info: %v", err)
 		// Non-fatal, continue
+	} else {
+		c.logger.Debug("Hardware inventory collected successfully")
 	}
 
 	if c.config.BackupCriticalFiles {
+		c.logger.Debug("Collecting critical files specified in configuration")
 		if err := c.collectCriticalFiles(ctx); err != nil {
 			c.logger.Warning("Failed to collect critical files: %v", err)
+		} else {
+			c.logger.Debug("Critical files collected successfully")
 		}
 	}
 
 	if len(c.config.CustomBackupPaths) > 0 {
+		c.logger.Debug("Collecting custom paths: %v", c.config.CustomBackupPaths)
 		if err := c.collectCustomPaths(ctx); err != nil {
 			c.logger.Warning("Failed to collect custom paths: %v", err)
+		} else {
+			c.logger.Debug("Custom paths collected successfully")
 		}
 	}
 
 	if c.config.BackupScriptDir {
+		c.logger.Debug("Collecting script directories (/usr/local/bin,/usr/local/sbin)")
 		if err := c.collectScriptDirectories(ctx); err != nil {
 			c.logger.Warning("Failed to collect script directories: %v", err)
+		} else {
+			c.logger.Debug("Script directories collected successfully")
 		}
 	}
 
 	if c.config.BackupScriptRepository {
+		c.logger.Debug("Collecting script repository from %s", c.config.ScriptRepositoryPath)
 		if err := c.collectScriptRepository(ctx); err != nil {
 			c.logger.Warning("Failed to collect script repository: %v", err)
+		} else {
+			c.logger.Debug("Script repository collected successfully")
 		}
 	}
 
 	if c.config.BackupSSHKeys {
+		c.logger.Debug("Collecting SSH keys for root and users")
 		if err := c.collectSSHKeys(ctx); err != nil {
 			c.logger.Warning("Failed to collect SSH keys: %v", err)
+		} else {
+			c.logger.Debug("SSH keys collected successfully")
 		}
 	}
 
 	if c.config.BackupRootHome {
+		c.logger.Debug("Collecting /root home directory")
 		if err := c.collectRootHome(ctx); err != nil {
 			c.logger.Warning("Failed to collect root home files: %v", err)
+		} else {
+			c.logger.Debug("Root home directory collected successfully")
 		}
 	}
 
 	if c.config.BackupUserHomes {
+		c.logger.Debug("Collecting user home directories under /home")
 		if err := c.collectUserHomes(ctx); err != nil {
 			c.logger.Warning("Failed to collect user home directories: %v", err)
+		} else {
+			c.logger.Debug("User home directories collected successfully")
 		}
 	}
 
@@ -86,8 +119,10 @@ func (c *Collector) CollectSystemInfo(ctx context.Context) error {
 
 // collectSystemDirectories collects system configuration directories
 func (c *Collector) collectSystemDirectories(ctx context.Context) error {
+	c.logger.Debug("Collecting system directories into %s", c.tempDir)
 	// Network configuration
 	if c.config.BackupNetworkConfigs {
+		c.logger.Debug("Collecting network configuration files (/etc/network/*)")
 		if err := c.safeCopyFile(ctx,
 			"/etc/network/interfaces",
 			filepath.Join(c.tempDir, "etc/network/interfaces"),
@@ -105,6 +140,7 @@ func (c *Collector) collectSystemDirectories(ctx context.Context) error {
 	}
 
 	// Hostname and hosts
+	c.logger.Debug("Collecting hostname/hosts information")
 	if err := c.safeCopyFile(ctx,
 		"/etc/hostname",
 		filepath.Join(c.tempDir, "etc/hostname"),
@@ -120,6 +156,7 @@ func (c *Collector) collectSystemDirectories(ctx context.Context) error {
 	}
 
 	// DNS configuration
+	c.logger.Debug("Collecting DNS resolver configuration")
 	if err := c.safeCopyFile(ctx,
 		"/etc/resolv.conf",
 		filepath.Join(c.tempDir, "etc/resolv.conf"),
@@ -128,6 +165,7 @@ func (c *Collector) collectSystemDirectories(ctx context.Context) error {
 	}
 
 	// Timezone configuration
+	c.logger.Debug("Collecting timezone configuration")
 	if err := c.safeCopyFile(ctx,
 		"/etc/timezone",
 		filepath.Join(c.tempDir, "etc/timezone"),
@@ -137,6 +175,7 @@ func (c *Collector) collectSystemDirectories(ctx context.Context) error {
 
 	// Apt sources
 	if c.config.BackupAptSources {
+		c.logger.Debug("Collecting APT sources and authentication data")
 		if err := c.safeCopyFile(ctx,
 			"/etc/apt/sources.list",
 			filepath.Join(c.tempDir, "etc/apt/sources.list"),
@@ -212,6 +251,7 @@ func (c *Collector) collectSystemDirectories(ctx context.Context) error {
 
 	// Cron jobs
 	if c.config.BackupCronJobs {
+		c.logger.Debug("Collecting cron definitions (system and per-user)")
 		if err := c.safeCopyFile(ctx,
 			"/etc/crontab",
 			filepath.Join(c.tempDir, "etc/crontab"),
@@ -252,6 +292,7 @@ func (c *Collector) collectSystemDirectories(ctx context.Context) error {
 
 	// Systemd services
 	if c.config.BackupSystemdServices {
+		c.logger.Debug("Collecting systemd unit definitions")
 		if err := c.safeCopyDir(ctx,
 			"/etc/systemd/system",
 			filepath.Join(c.tempDir, "etc/systemd/system"),
@@ -262,6 +303,7 @@ func (c *Collector) collectSystemDirectories(ctx context.Context) error {
 
 	// SSL certificates
 	if c.config.BackupSSLCerts {
+		c.logger.Debug("Collecting SSL certificates and keys")
 		if err := c.safeCopyDir(ctx,
 			"/etc/ssl/certs",
 			filepath.Join(c.tempDir, "etc/ssl/certs"),
@@ -286,6 +328,7 @@ func (c *Collector) collectSystemDirectories(ctx context.Context) error {
 
 	// Sysctl configuration
 	if c.config.BackupSysctlConfig {
+		c.logger.Debug("Collecting sysctl configuration files")
 		if err := c.safeCopyFile(ctx,
 			"/etc/sysctl.conf",
 			filepath.Join(c.tempDir, "etc/sysctl.conf"),
@@ -303,6 +346,7 @@ func (c *Collector) collectSystemDirectories(ctx context.Context) error {
 
 	// Kernel modules
 	if c.config.BackupKernelModules {
+		c.logger.Debug("Collecting kernel module configuration")
 		if err := c.safeCopyFile(ctx,
 			"/etc/modules",
 			filepath.Join(c.tempDir, "etc/modules"),
@@ -320,6 +364,7 @@ func (c *Collector) collectSystemDirectories(ctx context.Context) error {
 
 	// Firewall rules (iptables/nftables)
 	if c.config.BackupFirewallRules {
+		c.logger.Debug("Collecting firewall rules (/etc/iptables, nftables)")
 		if err := c.safeCopyDir(ctx,
 			"/etc/iptables",
 			filepath.Join(c.tempDir, "etc/iptables"),
@@ -350,6 +395,7 @@ func (c *Collector) collectSystemDirectories(ctx context.Context) error {
 		c.logger.Debug("No /etc/logrotate.d found")
 	}
 
+	c.logger.Debug("System directories collected")
 	return nil
 }
 
@@ -359,11 +405,13 @@ func (c *Collector) collectSystemCommands(ctx context.Context) error {
 	if err := c.ensureDir(commandsDir); err != nil {
 		return fmt.Errorf("failed to create commands directory: %w", err)
 	}
+	c.logger.Debug("Collecting system command outputs into %s", commandsDir)
 
 	infoDir := filepath.Join(c.tempDir, "var/lib/proxmox-backup-info")
 	if err := c.ensureDir(infoDir); err != nil {
 		return fmt.Errorf("failed to create system info directory: %w", err)
 	}
+	c.logger.Debug("System info snapshots will be stored in %s", infoDir)
 
 	// OS release information (CRITICAL)
 	if err := c.collectCommandMulti(ctx,
@@ -636,6 +684,7 @@ func (c *Collector) collectSystemCommands(ctx context.Context) error {
 			false)
 	}
 
+	c.logger.Debug("System command output collection finished")
 	return nil
 }
 
@@ -675,6 +724,7 @@ func ensureSystemPath() {
 // collectKernelInfo collects kernel-specific information
 func (c *Collector) collectKernelInfo(ctx context.Context) error {
 	commandsDir := filepath.Join(c.tempDir, "commands")
+	c.logger.Debug("Collecting kernel information into %s", commandsDir)
 
 	// Kernel command line
 	c.safeCmdOutput(ctx,
@@ -690,12 +740,14 @@ func (c *Collector) collectKernelInfo(ctx context.Context) error {
 		"Kernel version details",
 		false)
 
+	c.logger.Debug("Kernel information snapshot completed")
 	return nil
 }
 
 // collectHardwareInfo collects hardware information
 func (c *Collector) collectHardwareInfo(ctx context.Context) error {
 	commandsDir := filepath.Join(c.tempDir, "commands")
+	c.logger.Debug("Collecting hardware inventory into %s", commandsDir)
 
 	// DMI decode (requires root)
 	c.safeCmdOutput(ctx,
@@ -723,10 +775,12 @@ func (c *Collector) collectHardwareInfo(ctx context.Context) error {
 			false)
 	}
 
+	c.logger.Debug("Hardware information snapshot completed")
 	return nil
 }
 
 func (c *Collector) collectCriticalFiles(ctx context.Context) error {
+	c.logger.Debug("Collecting critical files (passwd/shadow/fstab/etc.)")
 	criticalFiles := []string{
 		"/etc/fstab",
 		"/etc/passwd",
@@ -746,10 +800,12 @@ func (c *Collector) collectCriticalFiles(ctx context.Context) error {
 		}
 	}
 
+	c.logger.Debug("Critical file collection completed")
 	return nil
 }
 
 func (c *Collector) collectCustomPaths(ctx context.Context) error {
+	c.logger.Debug("Collecting custom paths defined in configuration")
 	seen := make(map[string]struct{})
 
 	for _, rawPath := range c.config.CustomBackupPaths {
@@ -792,10 +848,12 @@ func (c *Collector) collectCustomPaths(ctx context.Context) error {
 		}
 	}
 
+	c.logger.Debug("Custom path collection completed")
 	return nil
 }
 
 func (c *Collector) collectScriptDirectories(ctx context.Context) error {
+	c.logger.Debug("Collecting system script directories")
 	scriptDirs := []string{
 		"/usr/local/bin",
 		"/usr/local/sbin",
@@ -811,6 +869,7 @@ func (c *Collector) collectScriptDirectories(ctx context.Context) error {
 		}
 	}
 
+	c.logger.Debug("System script directory collection completed")
 	return nil
 }
 
@@ -818,6 +877,7 @@ func (c *Collector) collectSSHKeys(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	c.logger.Debug("Collecting SSH keys for host, root and users")
 
 	// Host keys (public)
 	if matches, err := filepath.Glob("/etc/ssh/ssh_host_*"); err == nil {
@@ -854,6 +914,7 @@ func (c *Collector) collectSSHKeys(ctx context.Context) error {
 		}
 	}
 
+	c.logger.Debug("SSH key collection completed")
 	return nil
 }
 
@@ -875,7 +936,7 @@ func (c *Collector) collectScriptRepository(ctx context.Context) error {
 	target := filepath.Join(c.tempDir, "script-repository", filepath.Base(base))
 	c.logger.Debug("Collecting script repository from %s", base)
 
-	return filepath.WalkDir(base, func(path string, d os.DirEntry, err error) error {
+	if err := filepath.WalkDir(base, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			if d != nil && d.IsDir() {
 				return filepath.SkipDir
@@ -908,13 +969,19 @@ func (c *Collector) collectScriptRepository(ctx context.Context) error {
 			return c.ensureDir(dest)
 		}
 		return c.safeCopyFile(ctx, path, dest, fmt.Sprintf("script repository file %s", rel))
-	})
+	}); err != nil {
+		return err
+	}
+
+	c.logger.Debug("Script repository collection completed: %s -> %s", base, target)
+	return nil
 }
 
 func (c *Collector) collectRootHome(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	c.logger.Debug("Collecting /root profile files and histories")
 
 	if _, err := os.Stat("/root"); err != nil {
 		return nil
@@ -958,20 +1025,17 @@ func (c *Collector) collectRootHome(ctx context.Context) error {
 		}
 	}
 
-	dirs := []string{
-		".config",
-		".ssh",
-		"go",
-		"my-worker",
-	}
-	for _, dir := range dirs {
-		src := filepath.Join("/root", dir)
-		dest := filepath.Join(target, dir)
-		if err := c.safeCopyDir(ctx, src, dest, fmt.Sprintf("root directory %s", dir)); err != nil && !errors.Is(err, os.ErrNotExist) {
-			c.logger.Debug("Failed to copy root directory %s: %v", dir, err)
-		}
+	// Only copy security-critical directories; custom paths must be configured explicitly.
+	if err := c.safeCopyDir(ctx, "/root/.ssh", filepath.Join(target, ".ssh"), "root SSH directory"); err != nil && !errors.Is(err, os.ErrNotExist) {
+		c.logger.Debug("Failed to copy root SSH directory: %v", err)
 	}
 
+	wranglerLogs := filepath.Join("/root", ".config", ".wrangler", "logs")
+	if err := c.safeCopyDir(ctx, wranglerLogs, filepath.Join(target, ".config", ".wrangler", "logs"), "wrangler logs"); err != nil && !errors.Is(err, os.ErrNotExist) {
+		c.logger.Debug("Failed to copy wrangler logs: %v", err)
+	}
+
+	c.logger.Debug("Root home collection completed")
 	return nil
 }
 
@@ -979,6 +1043,7 @@ func (c *Collector) collectUserHomes(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	c.logger.Debug("Collecting home directories under /home")
 
 	entries, err := os.ReadDir("/home")
 	if err != nil {
@@ -1016,5 +1081,6 @@ func (c *Collector) collectUserHomes(ctx context.Context) error {
 		}
 	}
 
+	c.logger.Debug("User home collection completed")
 	return nil
 }

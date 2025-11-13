@@ -1,6 +1,7 @@
 package backup
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -85,6 +86,10 @@ type CollectorConfig struct {
 	BackupScriptRepository  bool
 	BackupUserHomes         bool
 
+	// PXAR scanning concurrency
+	PxarDatastoreConcurrency int
+	PxarIntraConcurrency     int
+
 	// Exclude patterns (glob patterns to skip)
 	ExcludePatterns []string
 
@@ -93,6 +98,18 @@ type CollectorConfig struct {
 
 	// Script repository base path (usually BASE_DIR)
 	ScriptRepositoryPath string
+
+	// PBS Authentication (auto-detected)
+	PBSRepository  string
+	PBSPassword    string
+	PBSFingerprint string
+}
+
+var defaultExcludePatterns = []string{
+	"**/node_modules/**",
+	"**/.vscode/**",
+	"**/.cursor*",
+	"**/.cursor-server*",
 }
 
 // Validate checks if the collector configuration is valid
@@ -124,6 +141,13 @@ func (c *CollectorConfig) Validate() error {
 
 	if !hasAnyEnabled {
 		return fmt.Errorf("at least one backup option must be enabled")
+	}
+
+	if c.PxarDatastoreConcurrency <= 0 {
+		c.PxarDatastoreConcurrency = 3
+	}
+	if c.PxarIntraConcurrency <= 0 {
+		c.PxarIntraConcurrency = 4
 	}
 
 	return nil
@@ -184,7 +208,10 @@ func GetDefaultCollectorConfig() *CollectorConfig {
 		BackupScriptRepository:  true,
 		BackupUserHomes:         true,
 
-		ExcludePatterns:   []string{},
+		PxarDatastoreConcurrency: 3,
+		PxarIntraConcurrency:     4,
+
+		ExcludePatterns:   append([]string(nil), defaultExcludePatterns...),
 		CustomBackupPaths: []string{},
 		BackupBlacklist:   []string{},
 	}
@@ -197,29 +224,37 @@ func (c *Collector) CollectAll(ctx context.Context) error {
 	}
 
 	c.logger.Info("Starting backup collection for %s", c.proxType)
+	c.logger.Debug("Collector dry-run=%v tempDir=%s", c.dryRun, c.tempDir)
 
 	switch c.proxType {
 	case types.ProxmoxVE:
+		c.logger.Debug("Invoking PVE-specific collectors (configs, jobs, schedules, storage metadata)")
 		if err := c.CollectPVEConfigs(ctx); err != nil {
 			return fmt.Errorf("PVE collection failed: %w", err)
 		}
+		c.logger.Debug("PVE-specific collection completed")
 	case types.ProxmoxBS:
+		c.logger.Debug("Invoking PBS-specific collectors (datastores, users, namespaces, pxar metadata)")
 		if err := c.CollectPBSConfigs(ctx); err != nil {
 			return fmt.Errorf("PBS collection failed: %w", err)
 		}
+		c.logger.Debug("PBS-specific collection completed")
 	case types.ProxmoxUnknown:
 		c.logger.Warning("Unknown Proxmox type, collecting generic system info only")
+		c.logger.Debug("Skipping hypervisor-specific collection because type is unknown")
 	}
 
 	// Collect common system information (always collect)
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	c.logger.Debug("Collecting baseline system information (network/system files, commands, hardware data)")
 	if err := c.CollectSystemInfo(ctx); err != nil {
 		c.logger.Warning("System info collection had warnings: %v", err)
 	}
+	c.logger.Debug("Baseline system information collected successfully")
 
-	c.logger.Info("Collection completed: %d files, %d failed, %d dirs created",
+	c.logger.Debug("Collection completed: %d files, %d failed, %d dirs created",
 		c.stats.FilesProcessed, c.stats.FilesFailed, c.stats.DirsCreated)
 
 	return nil
@@ -378,6 +413,8 @@ func (c *Collector) safeCopyFile(ctx context.Context, src, dest, description str
 		return err
 	}
 
+	c.logger.Debug("Collecting %s: %s -> %s", description, src, dest)
+
 	info, err := os.Lstat(src)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -477,6 +514,8 @@ func (c *Collector) safeCopyDir(ctx context.Context, src, dest, description stri
 		return err
 	}
 
+	c.logger.Debug("Collecting directory %s: %s -> %s", description, src, dest)
+
 	if c.shouldExclude(src) {
 		c.logger.Debug("Skipping directory %s due to exclusion pattern", src)
 		return nil
@@ -545,6 +584,8 @@ func (c *Collector) safeCmdOutput(ctx context.Context, cmd, output, description 
 		return err
 	}
 
+	c.logger.Debug("Collecting %s via command: %s > %s", description, cmd, output)
+
 	cmdParts := strings.Fields(cmd)
 	if len(cmdParts) == 0 {
 		return fmt.Errorf("empty command")
@@ -583,8 +624,10 @@ func (c *Collector) safeCmdOutput(ctx context.Context, cmd, output, description 
 		}
 	}()
 
-	execCmd.Stdout = outFile
-	execCmd.Stderr = outFile
+	var outputBuf bytes.Buffer
+	multiWriter := io.MultiWriter(outFile, &outputBuf)
+	execCmd.Stdout = multiWriter
+	execCmd.Stderr = multiWriter
 
 	if err := execCmd.Run(); err != nil {
 		if closeErr := outFile.Close(); closeErr != nil {
@@ -598,7 +641,16 @@ func (c *Collector) safeCmdOutput(ctx context.Context, cmd, output, description 
 			c.stats.FilesFailed++
 			return fmt.Errorf("critical command failed for %s: %w", description, err)
 		}
-		c.logger.Debug("Command failed for %s: %v (non-critical, continuing)", description, err)
+		cmdString := cmd
+		if len(cmdParts) > 0 {
+			cmdString = strings.Join(cmdParts, " ")
+		}
+		c.logger.Warning("Skipping %s: command `%s` failed (%v). Non-critical; backup continues. Ensure the PBS CLI is available and has proper permissions. Output: %s",
+			description,
+			cmdString,
+			err,
+			summarizeCommandOutput(&outputBuf),
+		)
 		return nil // Non-critical failure
 	}
 
@@ -606,6 +658,268 @@ func (c *Collector) safeCmdOutput(ctx context.Context, cmd, output, description 
 	c.logger.Debug("Successfully collected %s via command: %s", description, cmd)
 
 	return nil
+}
+
+// safeCmdOutputWithPBSAuth executes a command with PBS authentication environment variables
+// This enables automatic authentication for proxmox-backup-client commands
+func (c *Collector) safeCmdOutputWithPBSAuth(ctx context.Context, cmd, output, description string, critical bool) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	cmdParts := strings.Fields(cmd)
+	if len(cmdParts) == 0 {
+		return fmt.Errorf("empty command")
+	}
+
+	// Check if command exists
+	if _, err := exec.LookPath(cmdParts[0]); err != nil {
+		if critical {
+			c.stats.FilesFailed++
+			return fmt.Errorf("critical command not available: %s", cmdParts[0])
+		}
+		c.logger.Debug("Command not available: %s (skipping %s)", cmdParts[0], description)
+		return nil
+	}
+
+	if c.dryRun {
+		c.logger.Debug("[DRY RUN] Would execute command with PBS auth: %s > %s", cmd, output)
+		return nil
+	}
+
+	// Ensure output directory exists
+	if err := c.ensureDir(filepath.Dir(output)); err != nil {
+		return err
+	}
+
+	// Execute command with PBS authentication environment
+	execCmd := exec.CommandContext(ctx, cmdParts[0], cmdParts[1:]...)
+
+	// Set PBS authentication environment variables (if available)
+	execCmd.Env = os.Environ()
+	pbsAuthUsed := false
+	if c.config.PBSRepository != "" {
+		execCmd.Env = append(execCmd.Env, fmt.Sprintf("PBS_REPOSITORY=%s", c.config.PBSRepository))
+		pbsAuthUsed = true
+	}
+	if c.config.PBSPassword != "" {
+		execCmd.Env = append(execCmd.Env, fmt.Sprintf("PBS_PASSWORD=%s", c.config.PBSPassword))
+		pbsAuthUsed = true
+	}
+	if c.config.PBSFingerprint != "" {
+		execCmd.Env = append(execCmd.Env, fmt.Sprintf("PBS_FINGERPRINT=%s", c.config.PBSFingerprint))
+		pbsAuthUsed = true
+	}
+
+	if pbsAuthUsed {
+		c.logger.Debug("Using PBS authentication for command: %s", cmdParts[0])
+	}
+
+	outFile, err := os.OpenFile(output, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0640)
+	if err != nil {
+		c.stats.FilesFailed++
+		return fmt.Errorf("failed to create output file: %w", err)
+	}
+	defer func() {
+		if outFile != nil {
+			_ = outFile.Close()
+		}
+	}()
+
+	var outputBuf bytes.Buffer
+	multiWriter := io.MultiWriter(outFile, &outputBuf)
+	execCmd.Stdout = multiWriter
+	execCmd.Stderr = multiWriter
+
+	if err := execCmd.Run(); err != nil {
+		if closeErr := outFile.Close(); closeErr != nil {
+			c.logger.Debug("Failed to close output file for %s: %v", description, closeErr)
+		}
+		outFile = nil
+		if removeErr := os.Remove(output); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+			c.logger.Debug("Failed to remove incomplete output %s: %v", output, removeErr)
+		}
+		if critical {
+			c.stats.FilesFailed++
+			return fmt.Errorf("critical command failed for %s: %w", description, err)
+		}
+		cmdString := cmd
+		if len(cmdParts) > 0 {
+			cmdString = strings.Join(cmdParts, " ")
+		}
+		c.logger.Warning("Skipping %s: command `%s` failed (%v). Non-critical; backup continues. Ensure the PBS CLI is available and has proper permissions. Output: %s",
+			description,
+			cmdString,
+			err,
+			summarizeCommandOutput(&outputBuf),
+		)
+		return nil // Non-critical failure
+	}
+
+	c.stats.FilesProcessed++
+	c.logger.Debug("Successfully collected %s via PBS-authenticated command: %s", description, cmd)
+
+	return nil
+}
+
+// safeCmdOutputWithPBSAuthForDatastore executes a command with PBS authentication for a specific datastore
+// This function appends the datastore name to the PBS_REPOSITORY environment variable
+func (c *Collector) safeCmdOutputWithPBSAuthForDatastore(ctx context.Context, cmd, output, description, datastoreName string, critical bool) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	cmdParts := strings.Fields(cmd)
+	if len(cmdParts) == 0 {
+		return fmt.Errorf("empty command")
+	}
+
+	// Check if command exists
+	if _, err := exec.LookPath(cmdParts[0]); err != nil {
+		if critical {
+			c.stats.FilesFailed++
+			return fmt.Errorf("critical command not available: %s", cmdParts[0])
+		}
+		c.logger.Debug("Command not available: %s (skipping %s)", cmdParts[0], description)
+		return nil
+	}
+
+	if c.dryRun {
+		c.logger.Debug("[DRY RUN] Would execute command with PBS auth for datastore %s: %s > %s", datastoreName, cmd, output)
+		return nil
+	}
+
+	// Ensure output directory exists
+	if err := c.ensureDir(filepath.Dir(output)); err != nil {
+		return err
+	}
+
+	// Execute command with PBS authentication environment
+	execCmd := exec.CommandContext(ctx, cmdParts[0], cmdParts[1:]...)
+
+	// Set PBS authentication environment variables with datastore
+	execCmd.Env = os.Environ()
+
+	// Check if PBS credentials are configured
+	if c.config.PBSRepository == "" && c.config.PBSPassword == "" {
+		// No PBS credentials configured - skip this command gracefully
+		c.logger.Warning("Skipping %s: PBS credentials not configured. Set PBS_REPOSITORY and PBS_PASSWORD in config or environment to collect namespace information.", description)
+		return nil
+	}
+
+	// Build PBS_REPOSITORY with datastore
+	repoWithDatastore := ""
+	if c.config.PBSRepository != "" {
+		// If repository already has a datastore (contains :), replace it
+		// Otherwise append the datastore name
+		repoWithDatastore = c.config.PBSRepository
+		if strings.Contains(repoWithDatastore, ":") {
+			// Replace existing datastore: "user@host:oldds" -> "user@host:newds"
+			parts := strings.SplitN(repoWithDatastore, ":", 2)
+			repoWithDatastore = fmt.Sprintf("%s:%s", parts[0], datastoreName)
+		} else {
+			// Append datastore: "user@host" -> "user@host:datastore"
+			repoWithDatastore = fmt.Sprintf("%s:%s", repoWithDatastore, datastoreName)
+		}
+	} else {
+		// No repository configured but we have password - use root@pam as default user
+		repoWithDatastore = fmt.Sprintf("root@pam@localhost:%s", datastoreName)
+		c.logger.Debug("Using default user root@pam for PBS repository")
+	}
+
+	execCmd.Env = append(execCmd.Env, fmt.Sprintf("PBS_REPOSITORY=%s", repoWithDatastore))
+	c.logger.Debug("Using PBS_REPOSITORY=%s", repoWithDatastore)
+
+	if c.config.PBSPassword != "" {
+		execCmd.Env = append(execCmd.Env, fmt.Sprintf("PBS_PASSWORD=%s", c.config.PBSPassword))
+		c.logger.Debug("Using PBS_PASSWORD (hidden)")
+	}
+	if c.config.PBSFingerprint != "" {
+		execCmd.Env = append(execCmd.Env, fmt.Sprintf("PBS_FINGERPRINT=%s", c.config.PBSFingerprint))
+		c.logger.Debug("Using PBS_FINGERPRINT=%s", c.config.PBSFingerprint)
+	}
+
+	outFile, err := os.OpenFile(output, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0640)
+	if err != nil {
+		c.stats.FilesFailed++
+		return fmt.Errorf("failed to create output file: %w", err)
+	}
+	defer func() {
+		if outFile != nil {
+			_ = outFile.Close()
+		}
+	}()
+
+	var outputBuf bytes.Buffer
+	multiWriter := io.MultiWriter(outFile, &outputBuf)
+	execCmd.Stdout = multiWriter
+	execCmd.Stderr = multiWriter
+
+	if err := execCmd.Run(); err != nil {
+		if closeErr := outFile.Close(); closeErr != nil {
+			c.logger.Debug("Failed to close output file for %s: %v", description, closeErr)
+		}
+		outFile = nil
+		if removeErr := os.Remove(output); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+			c.logger.Debug("Failed to remove incomplete output %s: %v", output, removeErr)
+		}
+		if critical {
+			c.stats.FilesFailed++
+			return fmt.Errorf("critical command failed for %s: %w", description, err)
+		}
+		cmdString := cmd
+		if len(cmdParts) > 0 {
+			cmdString = strings.Join(cmdParts, " ")
+		}
+		c.logger.Warning("Skipping %s: command `%s` failed (%v). Non-critical; backup continues. Ensure the PBS CLI is available and has proper permissions. Output: %s",
+			description,
+			cmdString,
+			err,
+			summarizeCommandOutput(&outputBuf),
+		)
+		return nil // Non-critical failure
+	}
+
+	c.stats.FilesProcessed++
+	c.logger.Debug("Successfully collected %s via PBS-authenticated command for datastore %s: %s", description, datastoreName, cmd)
+
+	return nil
+}
+
+func summarizeCommandOutput(buf *bytes.Buffer) string {
+	return summarizeCommandOutputText(buf.String())
+}
+
+func summarizeCommandOutputText(text string) string {
+	const maxLen = 2048
+	output := strings.TrimSpace(text)
+	if output == "" {
+		return "(no stdout/stderr)"
+	}
+	output = strings.ReplaceAll(output, "\n", " | ")
+	runes := []rune(output)
+	if len(runes) > maxLen {
+		runes = append(runes[:maxLen], '…')
+	}
+	return string(runes)
+}
+
+func sanitizeFilename(name string) string {
+	if name == "" {
+		return "entry"
+	}
+	replacer := strings.NewReplacer(
+		"/", "_",
+		"\\", "_",
+		"@", "_",
+		":", "_",
+	)
+	clean := replacer.Replace(name)
+	clean = strings.ReplaceAll(clean, "..", "_")
+	if clean == "" {
+		clean = "entry"
+	}
+	return clean
 }
 
 // GetStats returns current collection statistics
@@ -662,11 +976,17 @@ func (c *Collector) captureCommandOutput(ctx context.Context, cmd, output, descr
 	execCmd := exec.CommandContext(ctx, parts[0], parts[1:]...)
 	out, err := execCmd.CombinedOutput()
 	if err != nil {
+		cmdString := strings.Join(parts, " ")
 		if critical {
 			c.stats.FilesFailed++
-			return nil, fmt.Errorf("critical command failed for %s: %w", description, err)
+			return nil, fmt.Errorf("critical command `%s` failed for %s: %w (output: %s)", cmdString, description, err, summarizeCommandOutputText(string(out)))
 		}
-		c.logger.Debug("Command failed for %s: %v (non-critical, continuing)", description, err)
+		c.logger.Warning("Skipping %s: command `%s` failed (%v). Non-critical; backup continues. Output: %s",
+			description,
+			cmdString,
+			err,
+			summarizeCommandOutputText(string(out)),
+		)
 		return nil, nil
 	}
 
@@ -730,6 +1050,9 @@ func (c *Collector) collectCommandOptional(ctx context.Context, cmd, output, des
 func (c *Collector) sampleDirectories(ctx context.Context, root string, maxDepth, limit int) ([]string, error) {
 	results := make([]string, 0, limit)
 	stopErr := errors.New("directory sample limit reached")
+	start := time.Now()
+	lastLog := start
+	visited := 0
 
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -742,6 +1065,14 @@ func (c *Collector) sampleDirectories(ctx context.Context, root string, maxDepth
 
 		if path == root {
 			return nil
+		}
+
+		if d.IsDir() {
+			visited++
+			if time.Since(lastLog) > 2*time.Second {
+				c.logger.Debug("PXAR sampleDirectories: root=%s visited=%d selected=%d", root, visited, len(results))
+				lastLog = time.Now()
+			}
 		}
 
 		if c.shouldExclude(path) {
@@ -778,12 +1109,18 @@ func (c *Collector) sampleDirectories(ctx context.Context, root string, maxDepth
 		return results, err
 	}
 
+	c.logger.Debug("PXAR sampleDirectories: root=%s completed (selected=%d visited=%d duration=%s)",
+		root, len(results), visited, time.Since(start).Truncate(time.Millisecond))
 	return results, nil
 }
 
 func (c *Collector) sampleFiles(ctx context.Context, root string, patterns []string, maxDepth, limit int) ([]FileSummary, error) {
 	results := make([]FileSummary, 0, limit)
 	stopErr := errors.New("file sample limit reached")
+	start := time.Now()
+	lastLog := start
+	visited := 0
+	matched := 0
 
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -810,6 +1147,10 @@ func (c *Collector) sampleFiles(ctx context.Context, root string, patterns []str
 			if depth >= maxDepth {
 				return filepath.SkipDir
 			}
+			if time.Since(lastLog) > 2*time.Second {
+				c.logger.Debug("PXAR sampleFiles: root=%s visited=%d matched=%d selected=%d", root, visited, matched, len(results))
+				lastLog = time.Now()
+			}
 			return nil
 		}
 
@@ -821,10 +1162,12 @@ func (c *Collector) sampleFiles(ctx context.Context, root string, patterns []str
 		if err != nil {
 			return err
 		}
+		visited++
 
 		if len(patterns) > 0 && !matchAnyPattern(patterns, filepath.Base(path), rel) {
 			return nil
 		}
+		matched++
 
 		info, err := d.Info()
 		if err != nil {
@@ -849,6 +1192,8 @@ func (c *Collector) sampleFiles(ctx context.Context, root string, patterns []str
 		return results, err
 	}
 
+	c.logger.Debug("PXAR sampleFiles: root=%s completed (selected=%d matched=%d visited=%d duration=%s)",
+		root, len(results), matched, visited, time.Since(start).Truncate(time.Millisecond))
 	return results, nil
 }
 

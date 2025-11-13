@@ -2,6 +2,7 @@ package backup
 
 import (
 	"archive/tar"
+	"bufio"
 	"compress/gzip"
 	"context"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"filippo.io/age"
 	"github.com/tis24dev/proxmox-backup/internal/logging"
 	"github.com/tis24dev/proxmox-backup/internal/types"
 )
@@ -35,8 +37,11 @@ type Archiver struct {
 	compression          types.CompressionType
 	compressionLevel     int
 	compressionThreads   int
+	compressionMode      string
 	dryRun               bool
 	requestedCompression types.CompressionType
+	encryptArchive       bool
+	ageRecipients        []age.Recipient
 }
 
 // ArchiverConfig holds configuration for archive creation
@@ -44,7 +49,10 @@ type ArchiverConfig struct {
 	Compression        types.CompressionType
 	CompressionLevel   int // 1-9 for gzip, 0-9 for xz, 1-22 for zstd
 	CompressionThreads int
+	CompressionMode    string
 	DryRun             bool
+	EncryptArchive     bool
+	AgeRecipients      []age.Recipient
 }
 
 // CompressionError rappresenta un errore di compressione esterna (xz/zstd)
@@ -116,13 +124,17 @@ func (a *ArchiverConfig) Validate() error {
 
 // NewArchiver creates a new archiver
 func NewArchiver(logger *logging.Logger, config *ArchiverConfig) *Archiver {
+	mode := normalizeCompressionMode(config.CompressionMode)
 	return &Archiver{
 		logger:               logger,
 		compression:          config.Compression,
 		compressionLevel:     config.CompressionLevel,
 		compressionThreads:   config.CompressionThreads,
+		compressionMode:      mode,
 		dryRun:               config.DryRun,
 		requestedCompression: config.Compression,
+		encryptArchive:       config.EncryptArchive,
+		ageRecipients:        append([]age.Recipient(nil), config.AgeRecipients...),
 	}
 }
 
@@ -141,10 +153,24 @@ func (a *Archiver) CompressionLevel() int {
 	return a.compressionLevel
 }
 
+// CompressionMode returns the active compression mode (fast/standard/maximum/ultra).
+func (a *Archiver) CompressionMode() string {
+	if a.compressionMode == "" {
+		return "standard"
+	}
+	return a.compressionMode
+}
+
+// CompressionThreads returns the number of threads requested for compression.
+func (a *Archiver) CompressionThreads() int {
+	return a.compressionThreads
+}
+
 // ResolveCompression ensures the configured compression is available and normalizes
 // the compression level. If the requested algorithm is unavailable it falls back
 // to gzip, keeping the caller informed via logs.
 func (a *Archiver) ResolveCompression() types.CompressionType {
+	a.logger.Debug("Resolving compression (requested=%s level=%d mode=%s)", a.requestedCompression, a.compressionLevel, a.CompressionMode())
 	switch a.compression {
 	case types.CompressionXZ:
 		if _, err := lookPath("xz"); err != nil {
@@ -189,6 +215,7 @@ func (a *Archiver) ResolveCompression() types.CompressionType {
 		a.compression = types.CompressionGzip
 		a.compressionLevel = normalizeLevelForCompression(a.compression, a.compressionLevel)
 	}
+	a.logger.Debug("Compression resolved to %s (level %d, threads %d)", a.compression, a.compressionLevel, a.compressionThreads)
 	return a.compression
 }
 
@@ -226,6 +253,66 @@ func normalizeLevelForCompression(comp types.CompressionType, level int) int {
 	return level
 }
 
+func normalizeCompressionMode(mode string) string {
+	switch strings.ToLower(mode) {
+	case "fast", "maximum", "ultra":
+		return strings.ToLower(mode)
+	default:
+		return "standard"
+	}
+}
+
+func requiresExtremeMode(mode string) bool {
+	switch strings.ToLower(mode) {
+	case "maximum", "ultra":
+		return true
+	default:
+		return false
+	}
+}
+
+func buildPigzArgs(level, threads int, mode string) []string {
+	args := make([]string, 0, 4)
+	if threads > 0 {
+		args = append(args, fmt.Sprintf("-p%d", threads))
+	}
+	args = append(args, fmt.Sprintf("-%d", level))
+	if requiresExtremeMode(mode) {
+		args = append(args, "--best")
+	}
+	args = append(args, "-c")
+	return args
+}
+
+func buildXZArgs(level, threads int, mode string) []string {
+	args := []string{fmt.Sprintf("-%d", level)}
+	if threads > 0 {
+		args = append(args, fmt.Sprintf("-T%d", threads))
+	} else {
+		args = append(args, "-T0")
+	}
+	if requiresExtremeMode(mode) {
+		args = append(args, "--extreme")
+	}
+	args = append(args, "-c")
+	return args
+}
+
+func buildZstdArgs(level, threads int) []string {
+	args := make([]string, 0, 5)
+	if level > 19 {
+		args = append(args, "--ultra")
+	}
+	args = append(args, fmt.Sprintf("-%d", level))
+	if threads > 0 {
+		args = append(args, fmt.Sprintf("-T%d", threads))
+	} else {
+		args = append(args, "-T0")
+	}
+	args = append(args, "-q", "-c")
+	return args
+}
+
 // writeTar writes the directory contents to the provided writer as a tar archive
 func (a *Archiver) writeTar(ctx context.Context, sourceDir string, w io.Writer) error {
 	tarWriter := tar.NewWriter(w)
@@ -241,8 +328,28 @@ func GetDefaultArchiverConfig() *ArchiverConfig {
 	return &ArchiverConfig{
 		Compression:      types.CompressionXZ,
 		CompressionLevel: 6, // Balanced compression
+		CompressionMode:  "standard",
 		DryRun:           false,
 	}
+}
+
+func (a *Archiver) wrapEncryptionWriter(base io.Writer) (io.Writer, func() error, error) {
+	if !a.encryptArchive {
+		return base, func() error { return nil }, nil
+	}
+
+	recipients := a.ageRecipients
+	if len(recipients) == 0 {
+		return nil, nil, fmt.Errorf("encryption enabled but no AGE recipients configured")
+	}
+
+	writer, err := age.Encrypt(base, recipients...)
+	if err != nil {
+		return nil, nil, fmt.Errorf("initialize age encryption: %w", err)
+	}
+
+	a.logger.Debug("Encrypting archive via age (streaming)")
+	return writer, writer.Close, nil
 }
 
 // CreateArchive creates a compressed tar archive from a directory
@@ -253,7 +360,14 @@ func (a *Archiver) CreateArchive(ctx context.Context, sourceDir, outputPath stri
 			a.requestedCompression, actualCompression)
 	}
 
-	a.logger.Info("Creating archive: %s -> %s (compression: %s)",
+	threadInfo := "auto"
+	if a.compressionThreads > 0 {
+		threadInfo = fmt.Sprintf("%d", a.compressionThreads)
+	}
+	a.logger.Info("Creating compressed archive with %s (level %d, mode %s, threads %s)",
+		actualCompression, a.compressionLevel, a.CompressionMode(), threadInfo)
+
+	a.logger.Debug("Creating archive: %s -> %s (compression: %s)",
 		sourceDir, outputPath, actualCompression)
 
 	if a.dryRun {
@@ -288,8 +402,8 @@ func (a *Archiver) CreateArchive(ctx context.Context, sourceDir, outputPath stri
 }
 
 // createGzipArchive creates a gzip-compressed tar archive using Go's stdlib
-func (a *Archiver) createGzipArchive(ctx context.Context, sourceDir, outputPath string) error {
-	a.logger.Debug("Creating gzip archive with level %d", a.compressionLevel)
+func (a *Archiver) createGzipArchive(ctx context.Context, sourceDir, outputPath string) (err error) {
+	a.logger.Debug("Creating gzip archive with level %d (mode %s)", a.compressionLevel, a.CompressionMode())
 
 	// Create output file
 	outFile, err := os.OpenFile(outputPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0640)
@@ -298,8 +412,22 @@ func (a *Archiver) createGzipArchive(ctx context.Context, sourceDir, outputPath 
 	}
 	defer outFile.Close()
 
-	// Create gzip writer
-	gzWriter, err := gzip.NewWriterLevel(outFile, a.compressionLevel)
+	writer, finalizeEncryption, err := a.wrapEncryptionWriter(outFile)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if cerr := finalizeEncryption(); cerr != nil {
+			if err == nil {
+				err = fmt.Errorf("finalize encrypted archive: %w", cerr)
+			} else {
+				a.logger.Warning("Failed to finalize encrypted archive: %v", cerr)
+			}
+		}
+	}()
+
+	// Create gzip writer targeting final writer (possibly encrypted)
+	gzWriter, err := gzip.NewWriterLevel(writer, a.compressionLevel)
 	if err != nil {
 		return fmt.Errorf("failed to create gzip writer: %w", err)
 	}
@@ -314,17 +442,14 @@ func (a *Archiver) createGzipArchive(ctx context.Context, sourceDir, outputPath 
 }
 
 func (a *Archiver) createPigzArchive(ctx context.Context, sourceDir, outputPath string) error {
-	a.logger.Debug("Creating pigz archive with level %d", a.compressionLevel)
-	args := []string{fmt.Sprintf("-%d", a.compressionLevel), "-c"}
-	if a.compressionThreads > 0 {
-		args = append([]string{fmt.Sprintf("-p%d", a.compressionThreads)}, args...)
-	}
+	a.logger.Debug("Creating pigz archive with level %d (mode %s)", a.compressionLevel, a.CompressionMode())
+	args := buildPigzArgs(a.compressionLevel, a.compressionThreads, a.CompressionMode())
 	cmd := exec.CommandContext(ctx, "pigz", args...)
 	return a.pipeTarThroughCommand(ctx, sourceDir, outputPath, cmd, "pigz")
 }
 
 // createTarArchive creates an uncompressed tar archive
-func (a *Archiver) createTarArchive(ctx context.Context, sourceDir, outputPath string) error {
+func (a *Archiver) createTarArchive(ctx context.Context, sourceDir, outputPath string) (err error) {
 	a.logger.Debug("Creating uncompressed tar archive")
 
 	// Create output file
@@ -334,14 +459,28 @@ func (a *Archiver) createTarArchive(ctx context.Context, sourceDir, outputPath s
 	}
 	defer outFile.Close()
 
-	if err := a.writeTar(ctx, sourceDir, outFile); err != nil {
+	writer, finalizeEncryption, err := a.wrapEncryptionWriter(outFile)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if cerr := finalizeEncryption(); cerr != nil {
+			if err == nil {
+				err = fmt.Errorf("finalize encrypted archive: %w", cerr)
+			} else {
+				a.logger.Warning("Failed to finalize encrypted archive: %v", cerr)
+			}
+		}
+	}()
+
+	if err := a.writeTar(ctx, sourceDir, writer); err != nil {
 		return fmt.Errorf("failed to write tar archive: %w", err)
 	}
 	return nil
 }
 
 func (a *Archiver) createBzip2Archive(ctx context.Context, sourceDir, outputPath string) error {
-	a.logger.Debug("Creating bzip2 archive with level %d", a.compressionLevel)
+	a.logger.Debug("Creating bzip2 archive with level %d (mode %s)", a.compressionLevel, a.CompressionMode())
 	var cmd *exec.Cmd
 	if a.compressionThreads > 1 {
 		if _, err := lookPath("pbzip2"); err == nil {
@@ -362,28 +501,27 @@ func (a *Archiver) createBzip2Archive(ctx context.Context, sourceDir, outputPath
 }
 
 func (a *Archiver) createLzmaArchive(ctx context.Context, sourceDir, outputPath string) error {
-	a.logger.Debug("Creating lzma archive with level %d", a.compressionLevel)
+	a.logger.Debug("Creating lzma archive with level %d (mode %s)", a.compressionLevel, a.CompressionMode())
+	levelFlag := fmt.Sprintf("-%d", a.compressionLevel)
+	if requiresExtremeMode(a.CompressionMode()) {
+		levelFlag += "e"
+	}
 	cmd := exec.CommandContext(ctx, "lzma",
-		fmt.Sprintf("-%d", a.compressionLevel),
+		levelFlag,
 		"-c",
 	)
 	return a.pipeTarThroughCommand(ctx, sourceDir, outputPath, cmd, "lzma")
 }
 
 // createXZArchive creates an xz-compressed tar archive using external xz command
-func (a *Archiver) createXZArchive(ctx context.Context, sourceDir, outputPath string) error {
-	a.logger.Debug("Creating xz archive with level %d", a.compressionLevel)
+func (a *Archiver) createXZArchive(ctx context.Context, sourceDir, outputPath string) (err error) {
+	a.logger.Debug("Creating xz archive with level %d (mode %s)", a.compressionLevel, a.CompressionMode())
 
-	// Compress with xz (streaming, multithreaded)
-	threadArg := "-T0"
-	if a.compressionThreads > 0 {
-		threadArg = fmt.Sprintf("-T%d", a.compressionThreads)
+	args := buildXZArgs(a.compressionLevel, a.compressionThreads, a.CompressionMode())
+	cmd := exec.CommandContext(ctx, "xz", args...)
+	if err := a.attachStderrLogger(cmd, "xz"); err != nil {
+		return fmt.Errorf("capture xz output: %w", err)
 	}
-	cmd := exec.CommandContext(ctx, "xz",
-		fmt.Sprintf("-%d", a.compressionLevel),
-		threadArg,
-		"-c",
-	)
 
 	outFile, err := os.OpenFile(outputPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0640)
 	if err != nil {
@@ -393,8 +531,20 @@ func (a *Archiver) createXZArchive(ctx context.Context, sourceDir, outputPath st
 
 	pr, pw := io.Pipe()
 	cmd.Stdin = pr
-	cmd.Stdout = outFile
-	cmd.Stderr = os.Stderr
+	writer, finalizeEncryption, err := a.wrapEncryptionWriter(outFile)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if cerr := finalizeEncryption(); cerr != nil {
+			if err == nil {
+				err = fmt.Errorf("finalize encrypted archive: %w", cerr)
+			} else {
+				a.logger.Warning("Failed to finalize encrypted archive: %v", cerr)
+			}
+		}
+	}()
+	cmd.Stdout = writer
 
 	errChan := make(chan error, 1)
 	go func() {
@@ -434,19 +584,14 @@ func (a *Archiver) createXZArchive(ctx context.Context, sourceDir, outputPath st
 }
 
 // createZstdArchive creates a zstd-compressed tar archive using external zstd command
-func (a *Archiver) createZstdArchive(ctx context.Context, sourceDir, outputPath string) error {
-	a.logger.Debug("Creating zstd archive with level %d", a.compressionLevel)
+func (a *Archiver) createZstdArchive(ctx context.Context, sourceDir, outputPath string) (err error) {
+	a.logger.Debug("Creating zstd archive with level %d (mode %s)", a.compressionLevel, a.CompressionMode())
 
-	// Compress with zstd (streaming, multithreaded)
-	threadArg := "-T0"
-	if a.compressionThreads > 0 {
-		threadArg = fmt.Sprintf("-T%d", a.compressionThreads)
+	args := buildZstdArgs(a.compressionLevel, a.compressionThreads)
+	cmd := exec.CommandContext(ctx, "zstd", args...)
+	if err := a.attachStderrLogger(cmd, "zstd"); err != nil {
+		return fmt.Errorf("capture zstd output: %w", err)
 	}
-	cmd := exec.CommandContext(ctx, "zstd",
-		fmt.Sprintf("-%d", a.compressionLevel),
-		threadArg,
-		"-q",
-		"-c")
 
 	outFile, err := os.OpenFile(outputPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0640)
 	if err != nil {
@@ -456,8 +601,20 @@ func (a *Archiver) createZstdArchive(ctx context.Context, sourceDir, outputPath 
 
 	pr, pw := io.Pipe()
 	cmd.Stdin = pr
-	cmd.Stdout = outFile
-	cmd.Stderr = os.Stderr
+	writer, finalizeEncryption, err := a.wrapEncryptionWriter(outFile)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if cerr := finalizeEncryption(); cerr != nil {
+			if err == nil {
+				err = fmt.Errorf("finalize encrypted archive: %w", cerr)
+			} else {
+				a.logger.Warning("Failed to finalize encrypted archive: %v", cerr)
+			}
+		}
+	}()
+	cmd.Stdout = writer
 
 	errChan := make(chan error, 1)
 	go func() {
@@ -496,7 +653,27 @@ func (a *Archiver) createZstdArchive(ctx context.Context, sourceDir, outputPath 
 	return nil
 }
 
-func (a *Archiver) pipeTarThroughCommand(ctx context.Context, sourceDir, outputPath string, cmd *exec.Cmd, algo string) error {
+func (a *Archiver) attachStderrLogger(cmd *exec.Cmd, algo string) error {
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return err
+	}
+
+	tag := strings.ToUpper(algo)
+	go func() {
+		scanner := bufio.NewScanner(stderr)
+		for scanner.Scan() {
+			a.logger.Info("[%s] %s", tag, scanner.Text())
+		}
+		if err := scanner.Err(); err != nil {
+			a.logger.Debug("[%s] stderr read error: %v", tag, err)
+		}
+	}()
+
+	return nil
+}
+
+func (a *Archiver) pipeTarThroughCommand(ctx context.Context, sourceDir, outputPath string, cmd *exec.Cmd, algo string) (err error) {
 	outFile, err := os.OpenFile(outputPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0640)
 	if err != nil {
 		return fmt.Errorf("failed to create output file: %w", err)
@@ -505,8 +682,23 @@ func (a *Archiver) pipeTarThroughCommand(ctx context.Context, sourceDir, outputP
 
 	pr, pw := io.Pipe()
 	cmd.Stdin = pr
-	cmd.Stdout = outFile
-	cmd.Stderr = os.Stderr
+	writer, finalizeEncryption, err := a.wrapEncryptionWriter(outFile)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if cerr := finalizeEncryption(); cerr != nil {
+			if err == nil {
+				err = fmt.Errorf("finalize encrypted archive: %w", cerr)
+			} else {
+				a.logger.Warning("Failed to finalize encrypted archive: %v", cerr)
+			}
+		}
+	}()
+	cmd.Stdout = writer
+	if err := a.attachStderrLogger(cmd, algo); err != nil {
+		return fmt.Errorf("capture %s output: %w", algo, err)
+	}
 
 	errChan := make(chan error, 1)
 	go func() {
@@ -612,6 +804,10 @@ func (a *Archiver) addToTar(ctx context.Context, tarWriter *tar.Writer, sourceDi
 			a.logger.Warning("Could not extract uid/gid for %s, using defaults", path)
 		}
 
+		// Force PAX format to preserve atime/ctime in extended headers
+		// PAX format supports extended timestamps that USTAR does not
+		header.Format = tar.FormatPAX
+
 		// Use forward slashes in tar (Unix convention) and prefix with "./" for compatibility
 		name := strings.ReplaceAll(archivePath, string(filepath.Separator), "/")
 		if !strings.HasPrefix(name, "./") && !strings.HasPrefix(name, "../") {
@@ -649,22 +845,27 @@ func (a *Archiver) addToTar(ctx context.Context, tarWriter *tar.Writer, sourceDi
 
 // GetArchiveExtension returns the appropriate file extension for the compression type
 func (a *Archiver) GetArchiveExtension() string {
+	var ext string
 	switch a.compression {
 	case types.CompressionGzip, types.CompressionPigz:
-		return ".tar.gz"
+		ext = ".tar.gz"
 	case types.CompressionBzip2:
-		return ".tar.bz2"
+		ext = ".tar.bz2"
 	case types.CompressionXZ:
-		return ".tar.xz"
+		ext = ".tar.xz"
 	case types.CompressionLZMA:
-		return ".tar.lzma"
+		ext = ".tar.lzma"
 	case types.CompressionZstd:
-		return ".tar.zst"
+		ext = ".tar.zst"
 	case types.CompressionNone:
-		return ".tar"
+		ext = ".tar"
 	default:
-		return ".tar"
+		ext = ".tar"
 	}
+	if a.encryptArchive {
+		ext += ".age"
+	}
+	return ext
 }
 
 // EstimateCompressionRatio returns an estimated compression ratio for the compression type
@@ -689,11 +890,18 @@ func (a *Archiver) EstimateCompressionRatio() float64 {
 
 // VerifyArchive performs comprehensive verification of the created archive
 func (a *Archiver) VerifyArchive(ctx context.Context, archivePath string) error {
-	a.logger.Info("Verifying archive: %s", archivePath)
+	a.logger.Debug("Verifying archive: %s", archivePath)
 
 	if a.dryRun {
 		a.logger.Info("[DRY RUN] Would verify archive: %s", archivePath)
 		return nil
+	}
+
+	if a.encryptArchive {
+		// With streaming encryption enabled, we cannot verify the tar/compression without plaintext.
+		// Keep metadata/checksum verification at higher layers; here we skip detailed verification.
+		a.logger.Debug("Archive verification skipped (encrypted archive)")
+		// Basic existence/size checks still apply below
 	}
 
 	// Check if file exists
@@ -708,6 +916,11 @@ func (a *Archiver) VerifyArchive(ctx context.Context, archivePath string) error 
 	}
 
 	a.logger.Debug("Archive size: %d bytes", info.Size())
+
+	if a.encryptArchive {
+		// Encrypted: skip detailed verification
+		return nil
+	}
 
 	// Test archive integrity based on compression type
 	switch a.compression {
@@ -744,7 +957,7 @@ func (a *Archiver) verifyXZArchive(ctx context.Context, archivePath string) erro
 		return fmt.Errorf("tar listing failed: %w (output: %s)", err, string(output))
 	}
 
-	a.logger.Info("Archive verification passed: XZ compression and tar structure are valid")
+	a.logger.Debug("Archive verification passed: XZ compression and tar structure are valid")
 	return nil
 }
 
@@ -767,7 +980,7 @@ func (a *Archiver) verifyZstdArchive(ctx context.Context, archivePath string) er
 		return fmt.Errorf("tar listing failed: %w (output: %s)", err, string(output))
 	}
 
-	a.logger.Info("Archive verification passed: Zstd compression and tar structure are valid")
+	a.logger.Debug("Archive verification passed: Zstd compression and tar structure are valid")
 	return nil
 }
 
@@ -782,7 +995,7 @@ func (a *Archiver) verifyGzipArchive(ctx context.Context, archivePath string) er
 		return fmt.Errorf("tar/gzip verification failed: %w (output: %s)", err, string(output))
 	}
 
-	a.logger.Info("Archive verification passed: Gzip compression and tar structure are valid")
+	a.logger.Debug("Archive verification passed: Gzip compression and tar structure are valid")
 	return nil
 }
 
@@ -797,7 +1010,7 @@ func (a *Archiver) verifyTarArchive(ctx context.Context, archivePath string) err
 		return fmt.Errorf("tar verification failed: %w (output: %s)", err, string(output))
 	}
 
-	a.logger.Info("Archive verification passed: Tar structure is valid")
+	a.logger.Debug("Archive verification passed: Tar structure is valid")
 	return nil
 }
 

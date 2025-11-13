@@ -1,6 +1,8 @@
 package utils
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"strings"
 )
@@ -72,4 +74,14 @@ func SplitKeyValue(line string) (string, string, bool) {
 func IsComment(line string) bool {
 	trimmed := strings.TrimSpace(line)
 	return strings.HasPrefix(trimmed, "#") || trimmed == ""
+}
+
+// GenerateRandomString generates a random string of the specified length
+func GenerateRandomString(length int) string {
+	bytes := make([]byte, (length+1)/2)
+	if _, err := rand.Read(bytes); err != nil {
+		// Fallback to a simple timestamp-based string if crypto/rand fails
+		return fmt.Sprintf("%d", length)
+	}
+	return hex.EncodeToString(bytes)[:length]
 }

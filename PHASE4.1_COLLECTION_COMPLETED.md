@@ -17,9 +17,28 @@ Phase 4.1 successfully implements comprehensive backup collection for Proxmox VE
 - I comandi opzionali non incrementano più `FilesFailed` e ripuliscono gli output parziali; aggiunti test unitari dedicati.
 - Implementati chunking/smart chunk directory, deduplication e prefilter come opzioni configurabili (`ENABLE_*`) con chunk metadata compatibile con lo script Bash.
 - Esteso l’archiver con supporto a `pigz`, `bzip2`, `lzma` e gestione dei thread di compressione; introdotte modalità `fast/standard/maximum/ultra`.
-- Copia della home di root (dotfiles + directory principali) e del repository script (`script-repository`, esclusi log/backup) pari al comportamento Bash.
+- La home di root viene limitata ai soli artefatti critici (dotfile principali, `.ssh`, log wrangler); eventuali directory personalizzate si dichiarano via `CUSTOM_BACKUP_PATHS`. Il repository script (`script-repository`, esclusi log/backup) resta allineato al Bash.
 - `backup_metadata.txt` ora usa timestamp e versione coerenti con la metrica Bash.
 - Verifica spazio disco allineata al Bash: nuove soglie configurabili `MIN_DISK_SPACE_{PRIMARY,SECONDARY,CLOUD}_GB` applicate rispettivamente alle tre destinazioni.
+- I comandi PBS/PVE contrassegnati come non critici ora riportano nel log il comando completo e un estratto di stdout/stderr quando falliscono, rendendo i warning immediatamente azionabili.
+- La documentazione (`README*.md`, `configs/backup.env`) elenca ora chiaramente i range supportati di `COMPRESSION_LEVEL` per ogni algoritmo e l’effetto delle modalità `fast/standard/maximum/ultra`, così gli utenti replicano i preset Bash senza ambiguità.
+
+### Nuova funzionalità: Controllo avanzato della compressione
+
+- **Config parity** – `COMPRESSION_TYPE`, `COMPRESSION_LEVEL`, `COMPRESSION_MODE` e `COMPRESSION_THREADS` vengono letti e validati esattamente come nello script Bash (gzip/pigz/bzip2 1‑9, xz/lzma 0‑9, zstd 1‑22). I mode `fast/standard/maximum/ultra` impostano automaticamente il livello e gli extra flag (`--extreme`, `--best`, `--ultra`).
+- **Archiver streaming** – `internal/backup/archiver.go` ora costruisce i comandi con i flag corretti per ogni algoritmo: pigz rispetta `--best` e `-pN`, xz aggiunge `--extreme` e `-TN`, lzma usa il suffisso `e`, zstd applica `--ultra` sopra il livello 19.
+- **Statistiche e manifest** – `internal/orchestrator/bash.go` e `internal/backup/checksum.go` salvano in JSON (log CLI, report, manifest) l’algoritmo effettivo, il livello normalizzato, il mode e i thread in modo che l’utente possa verificare rapidamente quale preset è stato utilizzato.
+- **Log CLI** – Durante la creazione dell’archivio viene stampata una riga esplicita `Creating compressed archive with <type> (level X, mode Y, threads Z)` che replica il comportamento del Bash e velocizza il debug sul campo.
+
+### Novità: Cifratura archivio in streaming (age)
+
+- **Pipeline**: `tar` → (compressione opzionale: gzip/pigz/xz/zstd/bzip2/lzma) → `age` → file cifrato. Nessun archivio in chiaro viene mai scritto su disco.
+- **Estensioni**: l’output finale include il suffisso `.age` (es. `backup-<ts>.tar.xz.age`).
+- **Config**: `ENCRYPT_ARCHIVE=true` abilita la cifratura; `AGE_RECIPIENT` e/o `AGE_RECIPIENT_FILE` elencano i recipient AGE usati per cifrare (il wizard li crea se mancano). Vedi `configs/backup.env`.
+- **Meta in chiaro**: manifest (`.manifest.json`) e checksum (`.sha256`, alias `.metadata`) restano in chiaro per consentire i pre‑check di ripristino senza passphrase.
+- **Verifica**: quando la cifratura è attiva, l’archiver salta i test di integrità approfonditi (tar list / test compressore) per evitare il plaintext; esegue comunque i controlli base (esistenza/size) e genera la checksum sull’artefatto cifrato.
+- **Wizard AGE**: se l’archivio è cifrato ma manca un recipient (`AGE_RECIPIENT` / `AGE_RECIPIENT_FILE`), il run interattivo propone due opzioni (incolla recipient pubblico o deriva da chiave privata senza salvarla). In modalità non interattiva l’esecuzione si ferma con un errore esplicativo.
+- **Hardening**: la directory `${BASE_DIR}/identity/age/` viene creata/forzata con permessi `700`/`600`, e il preflight blocca l’avvio se trova chiavi private sul server.
 
 ---
 
@@ -357,14 +376,14 @@ According to [PHASE4_ARCHITECTURE.md](PHASE4_ARCHITECTURE.md), the next implemen
 
 ### Phase 4.2: Storage Operations (Week 2)
 - **Day 1-2**: Storage interface + Local storage
-- **Day 3-4**: Secondary storage (rsync)
+- **Day 3-4**: Secondary storage (rsync — deprecated; now native Go atomic copy)
 - **Day 5-6**: Cloud storage (rclone)
 - **Day 7**: Unit tests + Integration tests
 
 **Files to create**:
 - `internal/storage/storage.go` - Storage interface
 - `internal/storage/local.go` - Local storage implementation
-- `internal/storage/secondary.go` - Secondary storage (rsync)
+- `internal/storage/secondary.go` - Secondary storage (native Go atomic copy; rsync removed)
 - `internal/storage/cloud.go` - Cloud storage (rclone)
 
 ---

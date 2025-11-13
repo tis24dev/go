@@ -37,6 +37,11 @@ func (l *Logger) SetLevel(level types.LogLevel) {
 	l.level = level
 }
 
+// UsesColor returns whether color output is enabled.
+func (l *Logger) UsesColor() bool {
+	return l.useColor
+}
+
 // GetLevel restituisce il livello corrente
 func (l *Logger) GetLevel() types.LogLevel {
 	return l.level

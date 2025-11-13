@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/tis24dev/proxmox-backup/internal/pbs"
 )
 
 type pbsDatastore struct {
@@ -20,16 +22,20 @@ type pbsDatastore struct {
 // CollectPBSConfigs collects Proxmox Backup Server specific configurations
 func (c *Collector) CollectPBSConfigs(ctx context.Context) error {
 	c.logger.Info("Collecting PBS configurations")
+	c.logger.Debug("Validating PBS environment before collection")
 
 	// Check if we're actually on PBS
 	if _, err := os.Stat("/etc/proxmox-backup"); os.IsNotExist(err) {
 		return fmt.Errorf("not a PBS system: /etc/proxmox-backup not found")
 	}
+	c.logger.Debug("Detected /etc/proxmox-backup, proceeding with PBS collection")
 
 	// Collect PBS directories
+	c.logger.Debug("Collecting PBS configuration directories")
 	if err := c.collectPBSDirectories(ctx); err != nil {
 		return fmt.Errorf("failed to collect PBS directories: %w", err)
 	}
+	c.logger.Debug("PBS directory collection completed")
 
 	datastores, err := c.getDatastoreList(ctx)
 	if err != nil {
@@ -38,31 +44,43 @@ func (c *Collector) CollectPBSConfigs(ctx context.Context) error {
 		}
 		return fmt.Errorf("failed to detect PBS datastores: %w", err)
 	}
+	c.logger.Debug("Detected %d PBS datastores", len(datastores))
 
 	// Collect PBS commands output
+	c.logger.Debug("Collecting PBS command outputs and state")
 	if err := c.collectPBSCommands(ctx, datastores); err != nil {
 		return fmt.Errorf("failed to collect PBS commands: %w", err)
 	}
+	c.logger.Debug("PBS command output collection completed")
 
 	// Collect datastore configurations
 	if c.config.BackupDatastoreConfigs {
+		c.logger.Debug("Collecting datastore configuration files and namespaces")
 		if err := c.collectDatastoreConfigs(ctx, datastores); err != nil {
 			c.logger.Warning("Failed to collect datastore configs: %v", err)
 			// Non-fatal, continue
+		} else {
+			c.logger.Debug("Datastore configuration collection completed")
 		}
 	}
 
 	// Collect user/ACL configurations
 	if c.config.BackupUserConfigs {
+		c.logger.Debug("Collecting PBS user and ACL configurations")
 		if err := c.collectUserConfigs(ctx); err != nil {
 			c.logger.Warning("Failed to collect user configs: %v", err)
 			// Non-fatal, continue
+		} else {
+			c.logger.Debug("User configuration collection completed")
 		}
 	}
 
 	if c.config.BackupPxarFiles {
+		c.logger.Debug("Collecting PXAR metadata for datastores")
 		if err := c.collectPBSPxarMetadata(ctx, datastores); err != nil {
 			c.logger.Warning("Failed to collect PBS PXAR metadata: %v", err)
+		} else {
+			c.logger.Debug("PXAR metadata collection completed")
 		}
 	}
 
@@ -72,6 +90,7 @@ func (c *Collector) CollectPBSConfigs(ctx context.Context) error {
 
 // collectPBSDirectories collects PBS-specific directories
 func (c *Collector) collectPBSDirectories(ctx context.Context) error {
+	c.logger.Debug("Collecting PBS directories (/etc/proxmox-backup, configs, schedules)")
 	// PBS main configuration directory
 	if err := c.safeCopyDir(ctx,
 		"/etc/proxmox-backup",
@@ -176,6 +195,7 @@ func (c *Collector) collectPBSDirectories(ctx context.Context) error {
 		}
 	}
 
+	c.logger.Debug("PBS directory collection finished")
 	return nil
 }
 
@@ -185,11 +205,13 @@ func (c *Collector) collectPBSCommands(ctx context.Context, datastores []pbsData
 	if err := c.ensureDir(commandsDir); err != nil {
 		return fmt.Errorf("failed to create commands directory: %w", err)
 	}
+	c.logger.Debug("Collecting PBS command outputs into %s", commandsDir)
 
 	stateDir := filepath.Join(c.tempDir, "var/lib/proxmox-backup")
 	if err := c.ensureDir(stateDir); err != nil {
 		return fmt.Errorf("failed to create PBS state directory: %w", err)
 	}
+	c.logger.Debug("PBS state snapshots will be stored in %s", stateDir)
 
 	// PBS version (CRITICAL)
 	if err := c.collectCommandMulti(ctx,
@@ -203,8 +225,8 @@ func (c *Collector) collectPBSCommands(ctx context.Context, datastores []pbsData
 
 	// Node configuration
 	c.safeCmdOutput(ctx,
-		"proxmox-backup-manager node config",
-		filepath.Join(commandsDir, "node_config.txt"),
+		"proxmox-backup-manager node show --output-format=json",
+		filepath.Join(commandsDir, "node_config.json"),
 		"Node configuration",
 		false)
 
@@ -222,7 +244,7 @@ func (c *Collector) collectPBSCommands(ctx context.Context, datastores []pbsData
 	if c.config.BackupDatastoreConfigs && len(datastores) > 0 {
 		for _, ds := range datastores {
 			c.safeCmdOutput(ctx,
-				fmt.Sprintf("proxmox-backup-manager datastore status %s --output-format=json", ds.Name),
+				fmt.Sprintf("proxmox-backup-manager datastore show %s --output-format=json", ds.Name),
 				filepath.Join(commandsDir, fmt.Sprintf("datastore_%s_status.json", ds.Name)),
 				fmt.Sprintf("Datastore %s status", ds.Name),
 				false)
@@ -278,7 +300,7 @@ func (c *Collector) collectPBSCommands(ctx context.Context, datastores []pbsData
 	// Verification jobs status
 	if c.config.BackupVerificationJobs {
 		if err := c.collectCommandMulti(ctx,
-			"proxmox-backup-manager verification-job list --output-format=json",
+			"proxmox-backup-manager verify-job list --output-format=json",
 			filepath.Join(commandsDir, "verification_jobs.json"),
 			"Verification jobs",
 			false,
@@ -301,7 +323,7 @@ func (c *Collector) collectPBSCommands(ctx context.Context, datastores []pbsData
 
 	// GC jobs
 	c.safeCmdOutput(ctx,
-		"proxmox-backup-manager garbage-collection-job list --output-format=json",
+		"proxmox-backup-manager garbage-collection list --output-format=json",
 		filepath.Join(commandsDir, "gc_jobs.json"),
 		"Garbage collection jobs",
 		false)
@@ -382,6 +404,7 @@ func (c *Collector) collectDatastoreConfigs(ctx context.Context, datastores []pb
 		c.logger.Debug("No datastores found")
 		return nil
 	}
+	c.logger.Debug("Collecting datastore details for %d datastores", len(datastores))
 
 	datastoreDir := filepath.Join(c.tempDir, "datastores")
 	if err := c.ensureDir(datastoreDir); err != nil {
@@ -396,32 +419,111 @@ func (c *Collector) collectDatastoreConfigs(ctx context.Context, datastores []pb
 			fmt.Sprintf("Datastore %s configuration", ds.Name),
 			false)
 
-		// Get namespace list (PBS 2.4+)
-		c.safeCmdOutput(ctx,
-			fmt.Sprintf("proxmox-backup-client namespace list --repository localhost:%s --output-format=json", ds.Name),
-			filepath.Join(datastoreDir, fmt.Sprintf("%s_namespaces.json", ds.Name)),
-			fmt.Sprintf("Datastore %s namespaces", ds.Name),
-			false)
+		// Get namespace list using CLI/Filesystem fallback
+		if err := c.collectDatastoreNamespaces(ds, datastoreDir); err != nil {
+			c.logger.Debug("Failed to collect namespaces for datastore %s: %v", ds.Name, err)
+		}
 	}
 
+	c.logger.Debug("Datastore configuration collection completed")
+	return nil
+}
+
+// collectDatastoreNamespaces collects namespace information for a datastore
+// using CLI first, then filesystem fallback.
+func (c *Collector) collectDatastoreNamespaces(ds pbsDatastore, datastoreDir string) error {
+	c.logger.Debug("Collecting namespaces for datastore %s (path: %s)", ds.Name, ds.Path)
+	namespaces, fromFallback, err := pbs.ListNamespaces(ds.Name, ds.Path)
+	if err != nil {
+		return err
+	}
+
+	// Write namespaces to JSON file
+	outputPath := filepath.Join(datastoreDir, fmt.Sprintf("%s_namespaces.json", ds.Name))
+	data, err := json.MarshalIndent(namespaces, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal namespaces: %w", err)
+	}
+
+	if err := os.WriteFile(outputPath, data, 0640); err != nil {
+		c.stats.FilesFailed++
+		return fmt.Errorf("failed to write namespaces file: %w", err)
+	}
+
+	c.stats.FilesProcessed++
+	if fromFallback {
+		c.logger.Debug("Successfully collected %d namespaces for datastore %s via filesystem fallback", len(namespaces), ds.Name)
+	} else {
+		c.logger.Debug("Successfully collected %d namespaces for datastore %s via CLI", len(namespaces), ds.Name)
+	}
 	return nil
 }
 
 // collectUserConfigs collects user and ACL configurations
 func (c *Collector) collectUserConfigs(ctx context.Context) error {
+	c.logger.Debug("Collecting PBS user and ACL information")
 	usersDir := filepath.Join(c.tempDir, "users")
 	if err := c.ensureDir(usersDir); err != nil {
 		return fmt.Errorf("failed to create users directory: %w", err)
 	}
 
-	// Token list
-	c.safeCmdOutput(ctx,
-		"proxmox-backup-manager user list-tokens --output-format=json",
-		filepath.Join(usersDir, "tokens.json"),
-		"API tokens",
-		false)
+	c.collectUserTokens(ctx, usersDir)
 
+	c.logger.Debug("PBS user information collection completed")
 	return nil
+}
+
+func (c *Collector) collectUserTokens(ctx context.Context, usersDir string) {
+	c.logger.Debug("Collecting PBS API tokens for configured users")
+	userListPath := filepath.Join(c.tempDir, "commands", "user_list.json")
+	data, err := os.ReadFile(userListPath)
+	if err != nil {
+		c.logger.Debug("User list not available for token export: %v", err)
+		return
+	}
+
+	var entries []struct {
+		UserID string `json:"userid"`
+	}
+	if err := json.Unmarshal(data, &entries); err != nil {
+		c.logger.Debug("Failed to parse user list for token export: %v", err)
+		return
+	}
+
+	aggregated := make(map[string]json.RawMessage)
+	for _, entry := range entries {
+		id := strings.TrimSpace(entry.UserID)
+		if id == "" {
+			continue
+		}
+
+		tokenPath := filepath.Join(usersDir, fmt.Sprintf("%s_tokens.json", sanitizeFilename(id)))
+		cmd := fmt.Sprintf("proxmox-backup-manager user list-tokens %s --output-format=json", id)
+		if err := c.safeCmdOutput(ctx, cmd, tokenPath, fmt.Sprintf("API tokens for %s", id), false); err != nil {
+			c.logger.Debug("Token export skipped for %s: %v", id, err)
+			continue
+		}
+
+		if payload, err := os.ReadFile(tokenPath); err == nil && len(payload) > 0 {
+			aggregated[id] = json.RawMessage(payload)
+		}
+	}
+
+	if len(aggregated) == 0 {
+		c.logger.Debug("No PBS user tokens exported")
+		return
+	}
+
+	buffer, err := json.MarshalIndent(aggregated, "", "  ")
+	if err != nil {
+		c.logger.Debug("Failed to serialize aggregated token data: %v", err)
+		return
+	}
+
+	if err := os.WriteFile(filepath.Join(usersDir, "tokens.json"), buffer, 0640); err != nil {
+		c.logger.Debug("Failed to write aggregated tokens.json: %v", err)
+	}
+	c.logger.Debug("Aggregated PBS token export completed (%d users)", len(aggregated))
 }
 
 func (c *Collector) collectPBSPxarMetadata(ctx context.Context, datastores []pbsDatastore) error {
@@ -432,6 +534,7 @@ func (c *Collector) collectPBSPxarMetadata(ctx context.Context, datastores []pbs
 	if len(datastores) == 0 {
 		return nil
 	}
+	c.logger.Debug("Collecting PXAR metadata for %d datastores", len(datastores))
 
 	metaRoot := filepath.Join(c.tempDir, "var/lib/proxmox-backup/pxar_metadata")
 	if err := c.ensureDir(metaRoot); err != nil {
@@ -459,6 +562,9 @@ func (c *Collector) collectPBSPxarMetadata(ctx context.Context, datastores []pbs
 			c.logger.Debug("Skipping PXAR metadata for datastore %s (path not accessible: %s)", ds.Name, ds.Path)
 			continue
 		}
+
+		start := time.Now()
+		c.logger.Debug("PXAR: scanning datastore %s at %s", ds.Name, ds.Path)
 
 		dsDir := filepath.Join(metaRoot, ds.Name)
 		if err := c.ensureDir(dsDir); err != nil {
@@ -493,11 +599,17 @@ func (c *Collector) collectPBSPxarMetadata(ctx context.Context, datastores []pbs
 
 		if dirs, err := c.sampleDirectories(ctx, ds.Path, 2, 30); err == nil && len(dirs) > 0 {
 			meta.SampleDirectories = dirs
+			c.logger.Debug("PXAR: datastore %s -> selected %d sample directories", ds.Name, len(dirs))
+		} else if err != nil {
+			c.logger.Debug("PXAR: datastore %s -> sampleDirectories error: %v", ds.Name, err)
 		}
 
 		patterns := []string{"*.pxar"}
 		if files, err := c.sampleFiles(ctx, ds.Path, patterns, 4, 200); err == nil && len(files) > 0 {
 			meta.SamplePxarFiles = files
+			c.logger.Debug("PXAR: datastore %s -> selected %d sample pxar files", ds.Name, len(files))
+		} else if err != nil {
+			c.logger.Debug("PXAR: datastore %s -> sampleFiles error: %v", ds.Name, err)
 		}
 
 		data, err := json.MarshalIndent(meta, "", "  ")
@@ -520,12 +632,16 @@ func (c *Collector) collectPBSPxarMetadata(ctx context.Context, datastores []pbs
 		if err := c.writePxarListReport(filepath.Join(dsDir, fmt.Sprintf("%s_ct_pxar_list.txt", ds.Name)), ds, "ct"); err != nil {
 			return err
 		}
+
+		c.logger.Debug("PXAR: datastore %s completed in %s", ds.Name, time.Since(start).Truncate(time.Millisecond))
 	}
 
+	c.logger.Debug("PXAR metadata collection completed")
 	return nil
 }
 
 func (c *Collector) writePxarSubdirReport(target string, ds pbsDatastore) error {
+	c.logger.Debug("Writing PXAR subdirectory report for datastore %s", ds.Name)
 	var builder strings.Builder
 	builder.WriteString(fmt.Sprintf("# Datastore subdirectories in %s generated on %s\n", ds.Path, time.Now().Format(time.RFC1123)))
 	builder.WriteString(fmt.Sprintf("# Datastore: %s\n", ds.Name))
@@ -549,10 +665,15 @@ func (c *Collector) writePxarSubdirReport(target string, ds pbsDatastore) error 
 		builder.WriteString("# No subdirectories found\n")
 	}
 
-	return c.writeReportFile(target, []byte(builder.String()))
+	if err := c.writeReportFile(target, []byte(builder.String())); err != nil {
+		return err
+	}
+	c.logger.Debug("PXAR subdirectory report written: %s", target)
+	return nil
 }
 
 func (c *Collector) writePxarListReport(target string, ds pbsDatastore, subDir string) error {
+	c.logger.Debug("Writing PXAR file list for datastore %s subdir %s", ds.Name, subDir)
 	basePath := filepath.Join(ds.Path, subDir)
 
 	var builder strings.Builder
@@ -605,7 +726,11 @@ func (c *Collector) writePxarListReport(target string, ds pbsDatastore, subDir s
 		}
 	}
 
-	return c.writeReportFile(target, []byte(builder.String()))
+	if err := c.writeReportFile(target, []byte(builder.String())); err != nil {
+		return err
+	}
+	c.logger.Debug("PXAR file list report written: %s", target)
+	return nil
 }
 
 // getDatastoreList retrieves the list of configured datastores
@@ -613,6 +738,7 @@ func (c *Collector) getDatastoreList(ctx context.Context) ([]pbsDatastore, error
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	c.logger.Debug("Enumerating PBS datastores via proxmox-backup-manager")
 
 	if _, err := exec.LookPath("proxmox-backup-manager"); err != nil {
 		return nil, nil
@@ -647,6 +773,7 @@ func (c *Collector) getDatastoreList(ctx context.Context) ([]pbsDatastore, error
 		}
 	}
 
+	c.logger.Debug("Detected %d configured datastores", len(datastores))
 	return datastores, nil
 }
 
@@ -655,12 +782,15 @@ func (c *Collector) hasTapeSupport(ctx context.Context) (bool, error) {
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
+	c.logger.Debug("Checking PBS tape support configuration")
 
 	if _, err := os.Stat("/etc/proxmox-backup/tape.cfg"); err == nil {
+		c.logger.Debug("Detected /etc/proxmox-backup/tape.cfg, tape support enabled")
 		return true, nil
 	}
 
 	if _, err := exec.LookPath("proxmox-tape"); err != nil {
+		c.logger.Debug("proxmox-tape CLI not available, tape support disabled")
 		return false, nil
 	}
 
@@ -673,5 +803,7 @@ func (c *Collector) hasTapeSupport(ctx context.Context) (bool, error) {
 		return false, fmt.Errorf("proxmox-tape drive list failed: %w", err)
 	}
 
-	return len(strings.TrimSpace(string(output))) > 0, nil
+	hasDrives := len(strings.TrimSpace(string(output))) > 0
+	c.logger.Debug("Tape drive inventory detected=%v", hasDrives)
+	return hasDrives, nil
 }

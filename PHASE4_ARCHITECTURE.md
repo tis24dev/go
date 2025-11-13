@@ -39,6 +39,7 @@ internal/orchestrator/
 
 ### 2.1 Già Implementato (Ottimo!)
 - ✅ **Archiver** con streaming compression (tar → pipe → xz/zstd)
+- ✅ **Advanced compression controls** (COMPRESSION_LEVEL/MODE/THREADS con range specifici, logging e manifest aggiornati)
 - ✅ **CompressionError** per errori specifici
 - ✅ **ResolveCompression()** con fallback intelligente
 - ✅ **Permissions/Owner/Timestamp** preservation
@@ -59,6 +60,12 @@ internal/orchestrator/
 - 🆕 **Storage operations** (local/secondary/cloud)
 - 🆕 **Backup orchestration** completa
 - 🆕 **Statistics tracking** dettagliato
+
+### 2.3 Approfondimento: controlli di compressione
+- `configs/backup.env` documenta i range ammessi per ogni algoritmo (gzip/pigz/bzip2 1‑9, xz/lzma 0‑9, zstd 1‑22) e spiega come i mode `fast/standard/maximum/ultra` mappano sui preset legacy.
+- `internal/backup/archiver.go` traduce i mode in flag reali (`--extreme`, `--best`, `--ultra`, suffisso `e`) mantenendo lo streaming tar→cmd e loggando tipo/livello/mode/thread utilizzati.
+- `internal/orchestrator/bash.go` propaga i nuovi campi verso `BackupStats`, report JSON e manifest, così l’utente può verificare dal CLI quale preset è stato realmente usato.
+- `internal/backup/checksum.go` aggiunge `compression_mode` al manifest `.manifest.json`, garantendo compatibilità con gli strumenti di audit Bash.
 
 ---
 
@@ -249,7 +256,7 @@ func (s *LocalStorage) Upload(ctx context.Context, localPath, remotePath string)
 type SecondaryStorage struct {
     logger  *logging.Logger
     basePath string
-    method  string // "rsync", "copy"
+    method  string // "copy" (rsync deprecated; replaced by native Go atomic copy)
 }
 
 func (s *SecondaryStorage) Upload(ctx context.Context, localPath, remotePath string) error {
@@ -554,7 +561,7 @@ test/fixtures/
 
 ### Phase 4.2: Storage (Week 2)
 - 🆕 Day 1-2: Storage interface + Local storage
-- 🆕 Day 3-4: Secondary storage (rsync)
+- 🆕 Day 3-4: Secondary storage (rsync — deprecated; now native Go atomic copy)
 - 🆕 Day 5-6: Cloud storage (rclone)
 - 🆕 Day 7: Unit tests + Integration tests
 

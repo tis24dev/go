@@ -421,7 +421,7 @@ While core backup now works end-to-end in Go, these enhancements remain:
    - `/etc/pve/nodes/*/qemu-server/*.conf`
    - Currently: skipped on "unknown" type
 3. **Storage Operations**:
-   - Secondary backup copy (rsync)
+   - Secondary backup copy (rsync — deprecated; replaced by native Go atomic copy)
    - Cloud upload (rclone)
    - Retention policy enforcement
 4. **Notifications**:

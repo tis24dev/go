@@ -40,20 +40,29 @@ func ApplyOptimizations(ctx context.Context, logger *logging.Logger, root string
 		cfg.EnableChunking, cfg.EnableDeduplication, cfg.EnablePrefilter)
 
 	if cfg.EnableDeduplication {
+		logger.Debug("Starting deduplication stage")
 		if err := deduplicateFiles(ctx, logger, root); err != nil {
 			logger.Warning("File deduplication failed: %v", err)
+		} else {
+			logger.Debug("Deduplication stage completed")
 		}
 	}
 
 	if cfg.EnablePrefilter {
+		logger.Debug("Starting prefilter stage (max file size %d bytes)", cfg.PrefilterMaxFileSizeBytes)
 		if err := prefilterFiles(ctx, logger, root, cfg.PrefilterMaxFileSizeBytes); err != nil {
 			logger.Warning("Content prefilter failed: %v", err)
+		} else {
+			logger.Debug("Prefilter stage completed")
 		}
 	}
 
 	if cfg.EnableChunking {
+		logger.Debug("Starting chunking stage (chunk size %d bytes threshold %d bytes)", cfg.ChunkSizeBytes, cfg.ChunkThresholdBytes)
 		if err := chunkLargeFiles(ctx, logger, root, cfg.ChunkSizeBytes, cfg.ChunkThresholdBytes); err != nil {
 			logger.Warning("Chunking failed: %v", err)
+		} else {
+			logger.Debug("Chunking stage completed")
 		}
 	}
 
@@ -147,6 +156,7 @@ func chunkLargeFiles(ctx context.Context, logger *logging.Logger, root string, c
 	if threshold <= 0 {
 		threshold = 50 * 1024 * 1024
 	}
+	logger.Debug("Scanning %s for files >= %d bytes to chunk (chunk size %d)", root, threshold, chunkSize)
 
 	chunkDir := filepath.Join(root, "chunked_files")
 	if err := os.MkdirAll(chunkDir, 0755); err != nil {
@@ -271,6 +281,7 @@ func prefilterFiles(ctx context.Context, logger *logging.Logger, root string, ma
 	if maxSize <= 0 {
 		maxSize = 8 * 1024 * 1024
 	}
+	logger.Debug("Prefiltering files under %s (max size %d bytes)", root, maxSize)
 
 	var processed int
 	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {

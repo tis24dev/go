@@ -86,7 +86,7 @@ func NewChecker(logger *logging.Logger, config *CheckerConfig) *Checker {
 // Order is important: directories must exist before we can check disk space,
 // permissions, or create lock files in those directories
 func (c *Checker) RunAllChecks(ctx context.Context) ([]CheckResult, error) {
-	c.logger.Info("Running pre-backup validation checks")
+	c.logger.Debug("Running pre-backup validation checks")
 
 	var results []CheckResult
 
@@ -121,7 +121,7 @@ func (c *Checker) RunAllChecks(ctx context.Context) ([]CheckResult, error) {
 		return results, fmt.Errorf("lock file check failed: %s", lockResult.Message)
 	}
 
-	c.logger.Info("All pre-backup checks passed")
+	c.logger.Debug("All pre-backup checks passed")
 	return results, nil
 }
 

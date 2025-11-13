@@ -352,7 +352,7 @@ The remaining components to implement:
    - Metadata validation
 
 4. **Storage Operations** (internal/storage/)
-   - Secondary backup copy (rsync)
+   - Secondary backup copy (rsync — deprecated; replaced by native Go atomic copy)
    - Cloud upload (rclone integration)
    - Retention policy enforcement
    - Cleanup of old backups

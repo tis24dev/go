@@ -115,6 +115,54 @@ BACKUP_BLACKLIST=/var/data/tmp
 		t.Errorf("BaseDir = %q; want %q", cfg.BaseDir, "/env/base/dir")
 	}
 
+	if !cfg.SecurityCheckEnabled {
+		t.Error("Expected SecurityCheckEnabled to be true by default")
+	}
+
+	if !cfg.AbortOnSecurityIssues {
+		t.Error("Expected AbortOnSecurityIssues to be true by default")
+	}
+
+	if cfg.ContinueOnSecurityIssues {
+		t.Error("Expected ContinueOnSecurityIssues to be false by default")
+	}
+
+	if cfg.AutoFixPermissions {
+		t.Error("Expected AutoFixPermissions to be false by default")
+	}
+
+	if !cfg.AutoUpdateHashes {
+		t.Error("Expected AutoUpdateHashes to be true by default")
+	}
+
+	if cfg.CheckNetworkSecurity {
+		t.Error("Expected CheckNetworkSecurity to be false by default")
+	}
+
+	if len(cfg.SuspiciousPorts) == 0 {
+		t.Error("Expected SuspiciousPorts to have default values")
+	}
+
+	if len(cfg.SuspiciousProcesses) == 0 {
+		t.Error("Expected SuspiciousProcesses to have default values")
+	}
+
+	if len(cfg.SafeBracketProcesses) == 0 {
+		t.Error("Expected SafeBracketProcesses to have default values")
+	}
+
+	if cfg.EncryptArchive {
+		t.Error("Expected EncryptArchive to be false by default")
+	}
+
+	if len(cfg.AgeRecipients) != 0 {
+		t.Errorf("Expected AgeRecipients to be empty by default, got %#v", cfg.AgeRecipients)
+	}
+
+	if cfg.AgeRecipientFile != "" {
+		t.Errorf("Expected AgeRecipientFile to be empty by default, got %q", cfg.AgeRecipientFile)
+	}
+
 	if cfg.BackupPVEJobs {
 		t.Error("Expected BackupPVEJobs to be false")
 	}
@@ -129,6 +177,39 @@ BACKUP_BLACKLIST=/var/data/tmp
 
 	if len(cfg.BackupBlacklist) != 1 || cfg.BackupBlacklist[0] != "/var/data/tmp" {
 		t.Errorf("BackupBlacklist = %#v; want [/var/data/tmp]", cfg.BackupBlacklist)
+	}
+}
+
+func TestConfigAgeRecipients(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "age.env")
+	content := `ENCRYPT_ARCHIVE=true
+AGE_RECIPIENT=age1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqs0cze5
+AGE_RECIPIENT= age1rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrh0r
+AGE_RECIPIENT_FILE=${BASE_DIR}/identity/age/recipient.txt
+`
+	if err := os.WriteFile(configPath, []byte(content), 0644); err != nil {
+		t.Fatalf("Failed to write config: %v", err)
+	}
+
+	cleanup := setBaseDirEnv(t, "/custom/base")
+	defer cleanup()
+
+	cfg, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+
+	if !cfg.EncryptArchive {
+		t.Fatal("EncryptArchive expected true")
+	}
+
+	if len(cfg.AgeRecipients) != 2 {
+		t.Fatalf("AgeRecipients = %#v; want 2 entries", cfg.AgeRecipients)
+	}
+
+	if cfg.AgeRecipientFile != "/custom/base/identity/age/recipient.txt" {
+		t.Errorf("AgeRecipientFile = %q; want %q", cfg.AgeRecipientFile, "/custom/base/identity/age/recipient.txt")
 	}
 }
 
