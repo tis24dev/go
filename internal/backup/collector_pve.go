@@ -350,55 +350,32 @@ func (c *Collector) collectPVECommands(ctx context.Context, clustered bool) (*pv
 		"Disks list",
 		false)
 
-	// Storage manager status
-	c.safeCmdOutput(ctx,
-		"pvesm status",
-		filepath.Join(commandsDir, "pvesm_status.txt"),
-		"Storage manager status",
-		false)
-
+	// Storage information
+	storageJSONPath := filepath.Join(commandsDir, "storage_status.json")
 	if storageData, err := c.captureCommandOutput(ctx,
-		"pvesm status --noborder --output-format=json",
-		filepath.Join(commandsDir, "pvesm_status.json"),
-		"PVE storage status (json)",
+		fmt.Sprintf("pvesh get /nodes/%s/storage --output-format=json", nodeName),
+		storageJSONPath,
+		"Storage status",
 		false); err != nil {
 		return nil, fmt.Errorf("failed to query storage status: %w", err)
 	} else if len(storageData) > 0 {
-		var storages []struct {
-			Storage string `json:"storage"`
-			Name    string `json:"name"`
-			Path    string `json:"path"`
-			Type    string `json:"type"`
-			Content string `json:"content"`
-		}
-		if err := json.Unmarshal(storageData, &storages); err != nil {
+		storages, err := parseNodeStorageList(storageData)
+		if err != nil {
 			c.logger.Debug("Failed to parse storage status JSON: %v", err)
 		} else {
-			seen := make(map[string]struct{})
-			for _, s := range storages {
-				name := strings.TrimSpace(s.Storage)
-				if name == "" {
-					name = strings.TrimSpace(s.Name)
-				}
-				if name == "" {
-					continue
-				}
-				if _, ok := seen[name]; ok {
-					continue
-				}
-				seen[name] = struct{}{}
-				info.Storages = append(info.Storages, pveStorageEntry{
-					Name:    name,
-					Path:    strings.TrimSpace(s.Path),
-					Type:    strings.TrimSpace(s.Type),
-					Content: strings.TrimSpace(s.Content),
-				})
-			}
+			info.Storages = append(info.Storages, storages...)
 			sort.Slice(info.Storages, func(i, j int) bool {
 				return info.Storages[i].Name < info.Storages[j].Name
 			})
 		}
 	}
+
+	// Storage manager status (text output kept for compatibility)
+	c.safeCmdOutput(ctx,
+		"pvesm status",
+		filepath.Join(commandsDir, "pvesm_status.txt"),
+		"Storage manager status",
+		false)
 
 	// Ensure we have at least one node reference
 	if len(info.Nodes) == 0 {
@@ -415,6 +392,41 @@ func (c *Collector) collectPVECommands(ctx context.Context, clustered bool) (*pv
 
 	c.logger.Debug("PVE command output collection finished: %d nodes, %d storages", len(info.Nodes), len(info.Storages))
 	return info, nil
+}
+
+func parseNodeStorageList(data []byte) ([]pveStorageEntry, error) {
+	var raw []struct {
+		Storage string `json:"storage"`
+		Name    string `json:"name"`
+		Path    string `json:"path"`
+		Type    string `json:"type"`
+		Content string `json:"content"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil, err
+	}
+	seen := make(map[string]struct{})
+	entries := make([]pveStorageEntry, 0, len(raw))
+	for _, item := range raw {
+		name := strings.TrimSpace(item.Storage)
+		if name == "" {
+			name = strings.TrimSpace(item.Name)
+		}
+		if name == "" {
+			continue
+		}
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		entries = append(entries, pveStorageEntry{
+			Name:    name,
+			Path:    strings.TrimSpace(item.Path),
+			Type:    strings.TrimSpace(item.Type),
+			Content: strings.TrimSpace(item.Content),
+		})
+	}
+	return entries, nil
 }
 
 // collectVMConfigs collects VM and Container configurations
