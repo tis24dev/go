@@ -89,6 +89,15 @@ func run() int {
 		return types.ExitSuccess.Int()
 	}
 
+	// Handle install wizard (runs before normal execution)
+	if args.Install {
+		if err := runInstall(ctx, args.ConfigPath, bootstrap); err != nil {
+			bootstrap.Error("ERROR: %v", err)
+			return types.ExitConfigError.Int()
+		}
+		return types.ExitSuccess.Int()
+	}
+
 	// Pre-flight: enforce Go runtime version
 	if err := checkGoRuntimeVersion("1.25.4"); err != nil {
 		bootstrap.Error("ERROR: %v", err)
