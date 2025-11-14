@@ -1153,6 +1153,14 @@ func runInstall(ctx context.Context, configPath string, bootstrap *logging.Boots
 	}
 	configPath = resolvedPath
 
+	// Derive BASE_DIR from the configuration path so that configs/, identity/, logs/, etc.
+	// all live under the same root, even during --install.
+	baseDir := filepath.Dir(filepath.Dir(configPath))
+	if baseDir == "" || baseDir == "." || baseDir == string(filepath.Separator) {
+		baseDir = "/opt/proxmox-backup"
+	}
+	_ = os.Setenv("BASE_DIR", baseDir)
+
 	tmpConfigPath := configPath + ".tmp"
 	defer func() {
 		if _, err := os.Stat(tmpConfigPath); err == nil {
@@ -1163,24 +1171,28 @@ func runInstall(ctx context.Context, configPath string, bootstrap *logging.Boots
 	reader := bufio.NewReader(os.Stdin)
 	printInstallBanner(configPath)
 
-	template, err := prepareBaseTemplate(reader, configPath)
+	template, err := prepareBaseTemplate(ctx, reader, configPath)
 	if err != nil {
-		return err
+		return wrapInstallError(err)
 	}
 
-	if template, err = configureSecondaryStorage(reader, template); err != nil {
-		return err
+	if template, err = configureSecondaryStorage(ctx, reader, template); err != nil {
+		return wrapInstallError(err)
 	}
-	if template, err = configureCloudStorage(reader, template); err != nil {
-		return err
+	if template, err = configureCloudStorage(ctx, reader, template); err != nil {
+		return wrapInstallError(err)
 	}
-	if template, err = configureNotifications(reader, template); err != nil {
-		return err
+	if template, err = configureNotifications(ctx, reader, template); err != nil {
+		return wrapInstallError(err)
 	}
-	enableEncryption, err := configureEncryption(reader, &template)
+	enableEncryption, err := configureEncryption(ctx, reader, &template)
 	if err != nil {
-		return err
+		return wrapInstallError(err)
 	}
+
+	// Ensure BASE_DIR is explicitly present in the generated env file so that
+	// subsequent runs and encryption setup use the same root directory.
+	template = setEnvValue(template, "BASE_DIR", baseDir)
 
 	if err := writeConfigFile(configPath, tmpConfigPath, template); err != nil {
 		return err
@@ -1233,9 +1245,9 @@ func printInstallBanner(configPath string) {
 	fmt.Printf("Configuration file: %s\n\n", configPath)
 }
 
-func prepareBaseTemplate(reader *bufio.Reader, configPath string) (string, error) {
+func prepareBaseTemplate(ctx context.Context, reader *bufio.Reader, configPath string) (string, error) {
 	if _, err := os.Stat(configPath); err == nil {
-		overwrite, err := promptYesNo(reader, fmt.Sprintf("%s already exists. Overwrite? [y/N]: ", configPath), false)
+		overwrite, err := promptYesNo(ctx, reader, fmt.Sprintf("%s already exists. Overwrite? [y/N]: ", configPath), false)
 		if err != nil {
 			return "", err
 		}
@@ -1244,7 +1256,7 @@ func prepareBaseTemplate(reader *bufio.Reader, configPath string) (string, error
 		}
 	}
 
-	create, err := promptYesNo(reader, "Generate configuration file from default template? [y/N]: ", false)
+	create, err := promptYesNo(ctx, reader, "Generate configuration file from default template? [y/N]: ", false)
 	if err != nil {
 		return "", err
 	}
@@ -1255,20 +1267,20 @@ func prepareBaseTemplate(reader *bufio.Reader, configPath string) (string, error
 	return config.DefaultEnvTemplate(), nil
 }
 
-func configureSecondaryStorage(reader *bufio.Reader, template string) (string, error) {
+func configureSecondaryStorage(ctx context.Context, reader *bufio.Reader, template string) (string, error) {
 	fmt.Println("\n--- Secondary storage ---")
 	fmt.Println("Configure an additional local path for redundant copies. (You can change it later)")
-	enableSecondary, err := promptYesNo(reader, "Enable secondary backup path? [y/N]: ", false)
+	enableSecondary, err := promptYesNo(ctx, reader, "Enable secondary backup path? [y/N]: ", false)
 	if err != nil {
 		return "", err
 	}
 	if enableSecondary {
-		secondaryPath, err := promptNonEmpty(reader, "Secondary backup path (SECONDARY_PATH): ")
+		secondaryPath, err := promptNonEmpty(ctx, reader, "Secondary backup path (SECONDARY_PATH): ")
 		if err != nil {
 			return "", err
 		}
 		secondaryPath = sanitizeEnvValue(secondaryPath)
-		secondaryLog, err := promptNonEmpty(reader, "Secondary log path (SECONDARY_LOG_PATH): ")
+		secondaryLog, err := promptNonEmpty(ctx, reader, "Secondary log path (SECONDARY_LOG_PATH): ")
 		if err != nil {
 			return "", err
 		}
@@ -1284,20 +1296,20 @@ func configureSecondaryStorage(reader *bufio.Reader, template string) (string, e
 	return template, nil
 }
 
-func configureCloudStorage(reader *bufio.Reader, template string) (string, error) {
+func configureCloudStorage(ctx context.Context, reader *bufio.Reader, template string) (string, error) {
 	fmt.Println("\n--- Cloud storage (rclone) ---")
 	fmt.Println("Remember to configure rclone manually before enabling cloud backups.")
-	enableCloud, err := promptYesNo(reader, "Enable cloud backups? [y/N]: ", false)
+	enableCloud, err := promptYesNo(ctx, reader, "Enable cloud backups? [y/N]: ", false)
 	if err != nil {
 		return "", err
 	}
 	if enableCloud {
-		remote, err := promptNonEmpty(reader, "Rclone remote for backups (e.g. myremote:pbs-backups): ")
+		remote, err := promptNonEmpty(ctx, reader, "Rclone remote for backups (e.g. myremote:pbs-backups): ")
 		if err != nil {
 			return "", err
 		}
 		remote = sanitizeEnvValue(remote)
-		logRemote, err := promptNonEmpty(reader, "Rclone remote for logs (e.g. myremote:/logs): ")
+		logRemote, err := promptNonEmpty(ctx, reader, "Rclone remote for logs (e.g. myremote:/logs): ")
 		if err != nil {
 			return "", err
 		}
@@ -1313,9 +1325,9 @@ func configureCloudStorage(reader *bufio.Reader, template string) (string, error
 	return template, nil
 }
 
-func configureNotifications(reader *bufio.Reader, template string) (string, error) {
+func configureNotifications(ctx context.Context, reader *bufio.Reader, template string) (string, error) {
 	fmt.Println("\n--- Telegram ---")
-	enableTelegram, err := promptYesNo(reader, "Enable Telegram notifications (centralized)? [y/N]: ", false)
+	enableTelegram, err := promptYesNo(ctx, reader, "Enable Telegram notifications (centralized)? [y/N]: ", false)
 	if err != nil {
 		return "", err
 	}
@@ -1327,7 +1339,7 @@ func configureNotifications(reader *bufio.Reader, template string) (string, erro
 	}
 
 	fmt.Println("\n--- Email ---")
-	enableEmail, err := promptYesNo(reader, "Enable email notifications (central relay)? [y/N]: ", false)
+	enableEmail, err := promptYesNo(ctx, reader, "Enable email notifications (central relay)? [y/N]: ", false)
 	if err != nil {
 		return "", err
 	}
@@ -1341,9 +1353,9 @@ func configureNotifications(reader *bufio.Reader, template string) (string, erro
 	return template, nil
 }
 
-func configureEncryption(reader *bufio.Reader, template *string) (bool, error) {
+func configureEncryption(ctx context.Context, reader *bufio.Reader, template *string) (bool, error) {
 	fmt.Println("\n--- Encryption ---")
-	enableEncryption, err := promptYesNo(reader, "Enable backup encryption? [y/N]: ", false)
+	enableEncryption, err := promptYesNo(ctx, reader, "Enable backup encryption? [y/N]: ", false)
 	if err != nil {
 		return false, err
 	}
@@ -1388,11 +1400,24 @@ func runInitialEncryptionSetup(ctx context.Context, configPath string) error {
 	return nil
 }
 
-func promptYesNo(reader *bufio.Reader, question string, defaultYes bool) (bool, error) {
+func wrapInstallError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, errInteractiveAborted) {
+		return fmt.Errorf("installation aborted by user")
+	}
+	return err
+}
+
+func promptYesNo(ctx context.Context, reader *bufio.Reader, question string, defaultYes bool) (bool, error) {
 	for {
+		if err := ctx.Err(); err != nil {
+			return false, errInteractiveAborted
+		}
 		fmt.Print(question)
-		resp, err := reader.ReadString('\n')
-		if err != nil && err != io.EOF {
+		resp, err := readLineWithContext(ctx, reader)
+		if err != nil {
 			return false, err
 		}
 		resp = strings.TrimSpace(strings.ToLower(resp))
@@ -1410,11 +1435,14 @@ func promptYesNo(reader *bufio.Reader, question string, defaultYes bool) (bool, 
 	}
 }
 
-func promptNonEmpty(reader *bufio.Reader, question string) (string, error) {
+func promptNonEmpty(ctx context.Context, reader *bufio.Reader, question string) (string, error) {
 	for {
+		if err := ctx.Err(); err != nil {
+			return "", errInteractiveAborted
+		}
 		fmt.Print(question)
-		resp, err := reader.ReadString('\n')
-		if err != nil && err != io.EOF {
+		resp, err := readLineWithContext(ctx, reader)
+		if err != nil {
 			return "", err
 		}
 		resp = strings.TrimSpace(resp)
@@ -1423,6 +1451,51 @@ func promptNonEmpty(reader *bufio.Reader, question string) (string, error) {
 		}
 		fmt.Println("Value cannot be empty.")
 	}
+}
+
+var (
+	errInteractiveAborted = errors.New("interactive input aborted")
+	errPromptInputClosed  = errors.New("stdin closed")
+)
+
+func readLineWithContext(ctx context.Context, reader *bufio.Reader) (string, error) {
+	type result struct {
+		line string
+		err  error
+	}
+	ch := make(chan result, 1)
+	go func() {
+		line, err := reader.ReadString('\n')
+		ch <- result{line: line, err: mapPromptInputError(err)}
+	}()
+	select {
+	case <-ctx.Done():
+		return "", errInteractiveAborted
+	case res := <-ch:
+		if res.err != nil {
+			if errors.Is(res.err, errPromptInputClosed) {
+				return "", errInteractiveAborted
+			}
+			return "", res.err
+		}
+		return res.line, nil
+	}
+}
+
+func mapPromptInputError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, io.EOF) {
+		return errPromptInputClosed
+	}
+	errStr := strings.ToLower(err.Error())
+	if strings.Contains(errStr, "use of closed file") ||
+		strings.Contains(errStr, "bad file descriptor") ||
+		strings.Contains(errStr, "file already closed") {
+		return errPromptInputClosed
+	}
+	return err
 }
 
 func setEnvValue(template, key, value string) string {
