@@ -114,14 +114,6 @@ func run() int {
 	bootstrap.Printf("  Version: %s", envInfo.Version)
 	bootstrap.Println("")
 
-	if args.Install {
-		if err := runInstall(ctx, args.ConfigPath, bootstrap); err != nil {
-			fmt.Fprintf(os.Stderr, "install failed: %v\n", err)
-			return types.ExitConfigError.Int()
-		}
-		return types.ExitSuccess.Int()
-	}
-
 	// Load configuration
 	autoBaseDir, autoFound := detectBaseDir()
 	if autoBaseDir == "" {
@@ -1133,6 +1125,206 @@ func formatBackupNoun(n int) string {
 		return "1 backup"
 	}
 	return fmt.Sprintf("%d backups", n)
+}
+
+func runInstall(ctx context.Context, configPath string, bootstrap *logging.BootstrapLogger) error {
+	if strings.TrimSpace(configPath) == "" {
+		configPath = "./configs/backup.env"
+	}
+
+	reader := bufio.NewReader(os.Stdin)
+	fmt.Println("===========================================")
+	fmt.Println(" Proxmox Backup Go - Install Wizard")
+	fmt.Println("===========================================")
+	fmt.Printf("File di configurazione: %s\n\n", configPath)
+
+	if _, err := os.Stat(configPath); err == nil {
+		overwrite, err := promptYesNo(reader, fmt.Sprintf("%s esiste già. Sovrascrivere? [y/N]: ", configPath), false)
+		if err != nil {
+			return err
+		}
+		if !overwrite {
+			return fmt.Errorf("installazione annullata (file esistente mantenuto)")
+		}
+	}
+
+	create, err := promptYesNo(reader, "Generare il file di configurazione dal template standard? [y/N]: ", false)
+	if err != nil {
+		return err
+	}
+	if !create {
+		return fmt.Errorf("installazione annullata dall'utente")
+	}
+
+	template := config.DefaultEnvTemplate()
+
+	fmt.Println("\n--- Storage secondario ---")
+	fmt.Println("Imposta un percorso aggiuntivo per replicare i backup localmente. (Modificabile in seguito)")
+	enableSecondary, err := promptYesNo(reader, "Abilitare il backup secondario? [y/N]: ", false)
+	if err != nil {
+		return err
+	}
+	if enableSecondary {
+		secondaryPath, err := promptNonEmpty(reader, "Percorso backup secondario (SECONDARY_PATH): ")
+		if err != nil {
+			return err
+		}
+		secondaryLog, err := promptNonEmpty(reader, "Percorso log secondario (SECONDARY_LOG_PATH): ")
+		if err != nil {
+			return err
+		}
+		template = setEnvValue(template, "SECONDARY_ENABLED", "true")
+		template = setEnvValue(template, "SECONDARY_PATH", secondaryPath)
+		template = setEnvValue(template, "SECONDARY_LOG_PATH", secondaryLog)
+	} else {
+		template = setEnvValue(template, "SECONDARY_ENABLED", "false")
+		template = setEnvValue(template, "SECONDARY_PATH", "")
+		template = setEnvValue(template, "SECONDARY_LOG_PATH", "")
+	}
+
+	fmt.Println("\n--- Storage cloud (rclone) ---")
+	fmt.Println("Ricorda di configurare rclone manualmente prima di usare il cloud.")
+	enableCloud, err := promptYesNo(reader, "Abilitare il backup su cloud? [y/N]: ", false)
+	if err != nil {
+		return err
+	}
+	if enableCloud {
+		remote, err := promptNonEmpty(reader, "Remote rclone per i backup (es. myremote:pbs-backups): ")
+		if err != nil {
+			return err
+		}
+		logRemote, err := promptNonEmpty(reader, "Remote per i log (es. myremote:/logs): ")
+		if err != nil {
+			return err
+		}
+		template = setEnvValue(template, "CLOUD_ENABLED", "true")
+		template = setEnvValue(template, "CLOUD_REMOTE", remote)
+		template = setEnvValue(template, "CLOUD_LOG_PATH", logRemote)
+	} else {
+		template = setEnvValue(template, "CLOUD_ENABLED", "false")
+		template = setEnvValue(template, "CLOUD_REMOTE", "")
+		template = setEnvValue(template, "CLOUD_LOG_PATH", "")
+	}
+
+	fmt.Println("\n--- Telegram ---")
+	enableTelegram, err := promptYesNo(reader, "Abilitare Telegram (centralizzato)? [y/N]: ", false)
+	if err != nil {
+		return err
+	}
+	if enableTelegram {
+		template = setEnvValue(template, "TELEGRAM_ENABLED", "true")
+		template = setEnvValue(template, "BOT_TELEGRAM_TYPE", "centralized")
+	} else {
+		template = setEnvValue(template, "TELEGRAM_ENABLED", "false")
+	}
+
+	fmt.Println("\n--- Email ---")
+	enableEmail, err := promptYesNo(reader, "Abilitare email (relay centralizzato)? [y/N]: ", false)
+	if err != nil {
+		return err
+	}
+	if enableEmail {
+		template = setEnvValue(template, "EMAIL_ENABLED", "true")
+		template = setEnvValue(template, "EMAIL_DELIVERY_METHOD", "relay")
+		template = setEnvValue(template, "EMAIL_FALLBACK_SENDMAIL", "true")
+	} else {
+		template = setEnvValue(template, "EMAIL_ENABLED", "false")
+	}
+
+	fmt.Println("\n--- Crittografia ---")
+	enableEncryption, err := promptYesNo(reader, "Abilitare la crittografia dei backup? [y/N]: ", false)
+	if err != nil {
+		return err
+	}
+	if enableEncryption {
+		template = setEnvValue(template, "ENCRYPT_ARCHIVE", "true")
+	} else {
+		template = setEnvValue(template, "ENCRYPT_ARCHIVE", "false")
+	}
+
+	dir := filepath.Dir(configPath)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("creazione directory configurazione: %w", err)
+	}
+	if err := os.WriteFile(configPath, []byte(template), 0o600); err != nil {
+		return fmt.Errorf("scrittura configurazione: %w", err)
+	}
+	bootstrap.Info("✓ Configurazione salvata in %s", configPath)
+
+	if enableEncryption {
+		cfg, err := config.LoadConfig(configPath)
+		if err != nil {
+			return fmt.Errorf("reload configurazione dopo install: %w", err)
+		}
+		logger := logging.New(types.LogLevelInfo, true)
+		orch := orchestrator.New(logger, "/opt/proxmox-backup/script", false)
+		orch.SetConfig(cfg)
+		orch.SetForceNewAgeRecipient(true)
+		if err := orch.EnsureAgeRecipientsReady(ctx); err != nil {
+			if errors.Is(err, orchestrator.ErrAgeRecipientSetupAborted) {
+				return fmt.Errorf("setup crittografia interrotto dall'utente")
+			}
+			return fmt.Errorf("setup crittografia fallito: %w", err)
+		}
+	}
+
+	fmt.Println("\nInstallazione completata.")
+	fmt.Println("Altre opzioni avanzate sono disponibili modificando direttamente il file env generato.")
+	return nil
+}
+
+func promptYesNo(reader *bufio.Reader, question string, defaultYes bool) (bool, error) {
+	for {
+		fmt.Print(question)
+		resp, err := reader.ReadString('\n')
+		if err != nil && err != io.EOF {
+			return false, err
+		}
+		resp = strings.TrimSpace(strings.ToLower(resp))
+		if resp == "" {
+			return defaultYes, nil
+		}
+		switch resp {
+		case "y", "yes":
+			return true, nil
+		case "n", "no":
+			return false, nil
+		default:
+			fmt.Println("Rispondi con 'y' oppure 'n'.")
+		}
+	}
+}
+
+func promptNonEmpty(reader *bufio.Reader, question string) (string, error) {
+	for {
+		fmt.Print(question)
+		resp, err := reader.ReadString('\n')
+		if err != nil && err != io.EOF {
+			return "", err
+		}
+		resp = strings.TrimSpace(resp)
+		if resp != "" {
+			return resp, nil
+		}
+		fmt.Println("Il valore non può essere vuoto.")
+	}
+}
+
+func setEnvValue(template, key, value string) string {
+	target := key + "="
+	lines := strings.Split(template, "\n")
+	replaced := false
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, target) {
+			lines[i] = key + "=" + value
+			replaced = true
+		}
+	}
+	if !replaced {
+		lines = append(lines, key+"="+value)
+	}
+	return strings.Join(lines, "\n")
 }
 
 func cleanupAfterRun(logger *logging.Logger) {
