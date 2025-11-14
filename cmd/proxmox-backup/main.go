@@ -1474,6 +1474,7 @@ func sanitizeEnvValue(value string) string {
 }
 
 func buildSignature() string {
+	now := time.Now().Format(time.RFC3339)
 	if info, ok := debug.ReadBuildInfo(); ok {
 		var revision, vcsTime string
 		modified := ""
@@ -1494,18 +1495,12 @@ func buildSignature() string {
 			if len(shortRev) > 9 {
 				shortRev = shortRev[:9]
 			}
-			if shortRev != "" && vcsTime != "" {
-				return fmt.Sprintf("%s%s (%s)", shortRev, modified, vcsTime)
-			}
 			if shortRev != "" {
-				return shortRev + modified
-			}
-			if vcsTime != "" {
-				return vcsTime
+				return fmt.Sprintf("%s%s (%s)", shortRev, modified, now)
 			}
 		}
 	}
-	return ""
+	return now
 }
 
 func cleanupAfterRun(logger *logging.Logger) {
