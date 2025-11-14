@@ -92,6 +92,16 @@ func run() int {
 		return types.ExitSuccess.Int()
 	}
 
+	// Resolve configuration path relative to the executable's base directory so
+	// that configs/ is located consistently next to the binary, regardless of
+	// the current working directory.
+	resolvedConfigPath, err := resolveInstallConfigPath(args.ConfigPath)
+	if err != nil {
+		bootstrap.Error("ERROR: %v", err)
+		return types.ExitConfigError.Int()
+	}
+	args.ConfigPath = resolvedConfigPath
+
 	// Handle install wizard (runs before normal execution)
 	if args.Install {
 		if err := runInstall(ctx, args.ConfigPath, bootstrap); err != nil {
@@ -1206,7 +1216,7 @@ func runInstall(ctx context.Context, configPath string, bootstrap *logging.Boots
 	}
 
 	fmt.Println("\nInstallation completed.")
-	fmt.Println("You can adjust any other advanced option directly in the generated env file.")
+	fmt.Printf("You can adjust any other advanced option directly in the generated env file at: %s\n", configPath)
 	return nil
 }
 
