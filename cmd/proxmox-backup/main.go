@@ -108,6 +108,9 @@ func run() int {
 	bootstrap.Println("===========================================")
 	bootstrap.Println("  Proxmox Backup - Go Version")
 	bootstrap.Printf("  Version: %s", version)
+	if sig := buildSignature(); sig != "" {
+		bootstrap.Printf("  Build Signature: %s", sig)
+	}
 	bootstrap.Println("  Phase: 5.1 - Notifications")
 	bootstrap.Println("===========================================")
 	bootstrap.Println("")
@@ -1335,6 +1338,41 @@ func setEnvValue(template, key, value string) string {
 		lines = append(lines, key+"="+value)
 	}
 	return strings.Join(lines, "\n")
+}
+
+func buildSignature() string {
+	if info, ok := debug.ReadBuildInfo(); ok {
+		var revision, vcsTime string
+		modified := ""
+		for _, setting := range info.Settings {
+			switch setting.Key {
+			case "vcs.revision":
+				revision = setting.Value
+			case "vcs.time":
+				vcsTime = setting.Value
+			case "vcs.modified":
+				if setting.Value == "true" {
+					modified = "*"
+				}
+			}
+		}
+		if revision != "" || vcsTime != "" {
+			shortRev := revision
+			if len(shortRev) > 9 {
+				shortRev = shortRev[:9]
+			}
+			if shortRev != "" && vcsTime != "" {
+				return fmt.Sprintf("%s%s (%s)", shortRev, modified, vcsTime)
+			}
+			if shortRev != "" {
+				return shortRev + modified
+			}
+			if vcsTime != "" {
+				return vcsTime
+			}
+		}
+	}
+	return ""
 }
 
 func cleanupAfterRun(logger *logging.Logger) {
