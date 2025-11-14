@@ -240,6 +240,24 @@ go get gopkg.in/yaml.v3@latest
 
 `configs/backup.env` contiene i flag esclusivi della versione Go. I principali:
 
+### Install wizard (`--install`)
+
+Per generare rapidamente il file `configs/backup.env` su un nodo nuovo:
+
+```bash
+cd /opt/proxmox-backup-go
+make build
+./build/proxmox-backup --install
+```
+
+Cosa fa il wizard:
+1. Salva sempre l’env dentro `<repo>/configs/backup.env` (i percorsi relativi vengono risolti rispetto alla cartella sopra l’eseguibile; niente file finisce in `build/`).
+2. Chiede se vuoi abilitare lo storage secondario, lo storage cloud, Telegram, email e la crittografia.
+3. Ogni input viene sanitizzato (niente newline o caratteri di controllo) e i commenti inline del template rimangono intatti anche dopo la sostituzione dei valori.
+4. Se abiliti la crittografia, al termine parte subito il wizard AGE così la chiave viene generata subito e non rimani in uno stato “a metà”.
+
+Al termine puoi modificare a mano il file generato per tutte le opzioni avanzate.
+
 ### PXAR metadata
 - `PXAR_SCAN_ENABLE`, `PXAR_STOP_ON_CAP`, `PXAR_SCAN_MAX_ROOTS`, `PXAR_ENUM_READDIR_WORKERS`, `PXAR_ENUM_BUDGET_MS` governano quante directory/file vengono enumerati.
 - `PXAR_FILE_INCLUDE_PATTERN` / `PXAR_FILE_EXCLUDE_PATTERN` sono liste (spazi/virgole) di glob per includere o escludere file durante la raccolta.

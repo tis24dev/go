@@ -32,6 +32,7 @@ import (
 	"github.com/tis24dev/proxmox-backup/internal/storage"
 	"github.com/tis24dev/proxmox-backup/internal/types"
 	"github.com/tis24dev/proxmox-backup/pkg/utils"
+	"golang.org/x/term"
 )
 
 const (
@@ -1140,51 +1141,131 @@ func formatBackupNoun(n int) string {
 }
 
 func runInstall(ctx context.Context, configPath string, bootstrap *logging.BootstrapLogger) error {
-	if strings.TrimSpace(configPath) == "" {
-		configPath = "./configs/backup.env"
+	if err := ensureInteractiveStdin(); err != nil {
+		return err
 	}
 
+	resolvedPath, err := resolveInstallConfigPath(configPath)
+	if err != nil {
+		return err
+	}
+	configPath = resolvedPath
+
+	tmpConfigPath := configPath + ".tmp"
+	defer func() {
+		if _, err := os.Stat(tmpConfigPath); err == nil {
+			_ = os.Remove(tmpConfigPath)
+		}
+	}()
+
 	reader := bufio.NewReader(os.Stdin)
+	printInstallBanner(configPath)
+
+	template, err := prepareBaseTemplate(reader, configPath)
+	if err != nil {
+		return err
+	}
+
+	if template, err = configureSecondaryStorage(reader, template); err != nil {
+		return err
+	}
+	if template, err = configureCloudStorage(reader, template); err != nil {
+		return err
+	}
+	if template, err = configureNotifications(reader, template); err != nil {
+		return err
+	}
+	enableEncryption, err := configureEncryption(reader, &template)
+	if err != nil {
+		return err
+	}
+
+	if err := writeConfigFile(configPath, tmpConfigPath, template); err != nil {
+		return err
+	}
+	bootstrap.Info("✓ Configuration saved at %s", configPath)
+
+	if enableEncryption {
+		if err := runInitialEncryptionSetup(ctx, configPath); err != nil {
+			return err
+		}
+	}
+
+	fmt.Println("\nInstallation completed.")
+	fmt.Println("You can adjust any other advanced option directly in the generated env file.")
+	return nil
+}
+
+func ensureInteractiveStdin() error {
+	if !term.IsTerminal(int(os.Stdin.Fd())) {
+		return fmt.Errorf("install wizard requires an interactive terminal (stdin is not a TTY)")
+	}
+	return nil
+}
+
+func resolveInstallConfigPath(configPath string) (string, error) {
+	if strings.TrimSpace(configPath) == "" {
+		configPath = "configs/backup.env"
+	}
+	if filepath.IsAbs(configPath) {
+		return configPath, nil
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve executable path: %w", err)
+	}
+	exeDir := filepath.Dir(exe)
+	baseDir := filepath.Dir(exeDir)
+	return filepath.Join(baseDir, configPath), nil
+}
+
+func printInstallBanner(configPath string) {
 	fmt.Println("===========================================")
 	fmt.Println(" Proxmox Backup Go - Install Wizard")
 	fmt.Println("===========================================")
 	fmt.Printf("Configuration file: %s\n\n", configPath)
+}
 
+func prepareBaseTemplate(reader *bufio.Reader, configPath string) (string, error) {
 	if _, err := os.Stat(configPath); err == nil {
 		overwrite, err := promptYesNo(reader, fmt.Sprintf("%s already exists. Overwrite? [y/N]: ", configPath), false)
 		if err != nil {
-			return err
+			return "", err
 		}
 		if !overwrite {
-			return fmt.Errorf("installation aborted (existing configuration kept)")
+			return "", fmt.Errorf("installation aborted (existing configuration kept)")
 		}
 	}
 
 	create, err := promptYesNo(reader, "Generate configuration file from default template? [y/N]: ", false)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if !create {
-		return fmt.Errorf("installation aborted by user")
+		return "", fmt.Errorf("installation aborted by user")
 	}
 
-	template := config.DefaultEnvTemplate()
+	return config.DefaultEnvTemplate(), nil
+}
 
+func configureSecondaryStorage(reader *bufio.Reader, template string) (string, error) {
 	fmt.Println("\n--- Secondary storage ---")
 	fmt.Println("Configure an additional local path for redundant copies. (You can change it later)")
 	enableSecondary, err := promptYesNo(reader, "Enable secondary backup path? [y/N]: ", false)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if enableSecondary {
 		secondaryPath, err := promptNonEmpty(reader, "Secondary backup path (SECONDARY_PATH): ")
 		if err != nil {
-			return err
+			return "", err
 		}
+		secondaryPath = sanitizeEnvValue(secondaryPath)
 		secondaryLog, err := promptNonEmpty(reader, "Secondary log path (SECONDARY_LOG_PATH): ")
 		if err != nil {
-			return err
+			return "", err
 		}
+		secondaryLog = sanitizeEnvValue(secondaryLog)
 		template = setEnvValue(template, "SECONDARY_ENABLED", "true")
 		template = setEnvValue(template, "SECONDARY_PATH", secondaryPath)
 		template = setEnvValue(template, "SECONDARY_LOG_PATH", secondaryLog)
@@ -1193,22 +1274,27 @@ func runInstall(ctx context.Context, configPath string, bootstrap *logging.Boots
 		template = setEnvValue(template, "SECONDARY_PATH", "")
 		template = setEnvValue(template, "SECONDARY_LOG_PATH", "")
 	}
+	return template, nil
+}
 
+func configureCloudStorage(reader *bufio.Reader, template string) (string, error) {
 	fmt.Println("\n--- Cloud storage (rclone) ---")
 	fmt.Println("Remember to configure rclone manually before enabling cloud backups.")
 	enableCloud, err := promptYesNo(reader, "Enable cloud backups? [y/N]: ", false)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if enableCloud {
 		remote, err := promptNonEmpty(reader, "Rclone remote for backups (e.g. myremote:pbs-backups): ")
 		if err != nil {
-			return err
+			return "", err
 		}
+		remote = sanitizeEnvValue(remote)
 		logRemote, err := promptNonEmpty(reader, "Rclone remote for logs (e.g. myremote:/logs): ")
 		if err != nil {
-			return err
+			return "", err
 		}
+		logRemote = sanitizeEnvValue(logRemote)
 		template = setEnvValue(template, "CLOUD_ENABLED", "true")
 		template = setEnvValue(template, "CLOUD_REMOTE", remote)
 		template = setEnvValue(template, "CLOUD_LOG_PATH", logRemote)
@@ -1217,11 +1303,14 @@ func runInstall(ctx context.Context, configPath string, bootstrap *logging.Boots
 		template = setEnvValue(template, "CLOUD_REMOTE", "")
 		template = setEnvValue(template, "CLOUD_LOG_PATH", "")
 	}
+	return template, nil
+}
 
+func configureNotifications(reader *bufio.Reader, template string) (string, error) {
 	fmt.Println("\n--- Telegram ---")
 	enableTelegram, err := promptYesNo(reader, "Enable Telegram notifications (centralized)? [y/N]: ", false)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if enableTelegram {
 		template = setEnvValue(template, "TELEGRAM_ENABLED", "true")
@@ -1233,7 +1322,7 @@ func runInstall(ctx context.Context, configPath string, bootstrap *logging.Boots
 	fmt.Println("\n--- Email ---")
 	enableEmail, err := promptYesNo(reader, "Enable email notifications (central relay)? [y/N]: ", false)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if enableEmail {
 		template = setEnvValue(template, "EMAIL_ENABLED", "true")
@@ -1242,47 +1331,53 @@ func runInstall(ctx context.Context, configPath string, bootstrap *logging.Boots
 	} else {
 		template = setEnvValue(template, "EMAIL_ENABLED", "false")
 	}
+	return template, nil
+}
 
+func configureEncryption(reader *bufio.Reader, template *string) (bool, error) {
 	fmt.Println("\n--- Encryption ---")
 	enableEncryption, err := promptYesNo(reader, "Enable backup encryption? [y/N]: ", false)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if enableEncryption {
-		template = setEnvValue(template, "ENCRYPT_ARCHIVE", "true")
+		*template = setEnvValue(*template, "ENCRYPT_ARCHIVE", "true")
 	} else {
-		template = setEnvValue(template, "ENCRYPT_ARCHIVE", "false")
+		*template = setEnvValue(*template, "ENCRYPT_ARCHIVE", "false")
 	}
+	return enableEncryption, nil
+}
 
+func writeConfigFile(configPath, tmpConfigPath, content string) error {
 	dir := filepath.Dir(configPath)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("failed to create configuration directory: %w", err)
 	}
-	if err := os.WriteFile(configPath, []byte(template), 0o600); err != nil {
+	if err := os.WriteFile(tmpConfigPath, []byte(content), 0o600); err != nil {
 		return fmt.Errorf("failed to write configuration file: %w", err)
 	}
-	bootstrap.Info("✓ Configuration saved at %s", configPath)
-
-	if enableEncryption {
-		cfg, err := config.LoadConfig(configPath)
-		if err != nil {
-			return fmt.Errorf("failed to reload configuration after install: %w", err)
-		}
-		logger := logging.New(types.LogLevelError, false)
-		logger.SetOutput(io.Discard)
-		orch := orchestrator.New(logger, "/opt/proxmox-backup/script", false)
-		orch.SetConfig(cfg)
-		orch.SetForceNewAgeRecipient(true)
-		if err := orch.EnsureAgeRecipientsReady(ctx); err != nil {
-			if errors.Is(err, orchestrator.ErrAgeRecipientSetupAborted) {
-				return fmt.Errorf("encryption setup aborted by user")
-			}
-			return fmt.Errorf("encryption setup failed: %w", err)
-		}
+	if err := os.Rename(tmpConfigPath, configPath); err != nil {
+		return fmt.Errorf("failed to finalize configuration file: %w", err)
 	}
+	return nil
+}
 
-	fmt.Println("\nInstallation completed.")
-	fmt.Println("You can adjust any other advanced option directly in the generated env file.")
+func runInitialEncryptionSetup(ctx context.Context, configPath string) error {
+	cfg, err := config.LoadConfig(configPath)
+	if err != nil {
+		return fmt.Errorf("failed to reload configuration after install: %w", err)
+	}
+	logger := logging.New(types.LogLevelError, false)
+	logger.SetOutput(io.Discard)
+	orch := orchestrator.New(logger, "/opt/proxmox-backup/script", false)
+	orch.SetConfig(cfg)
+	orch.SetForceNewAgeRecipient(true)
+	if err := orch.EnsureAgeRecipientsReady(ctx); err != nil {
+		if errors.Is(err, orchestrator.ErrAgeRecipientSetupAborted) {
+			return fmt.Errorf("encryption setup aborted by user")
+		}
+		return fmt.Errorf("encryption setup failed: %w", err)
+	}
 	return nil
 }
 
@@ -1330,7 +1425,30 @@ func setEnvValue(template, key, value string) string {
 	for i, line := range lines {
 		trimmed := strings.TrimSpace(line)
 		if strings.HasPrefix(trimmed, target) {
-			lines[i] = key + "=" + value
+			leadingLen := len(line) - len(strings.TrimLeft(line, " \t"))
+			leading := ""
+			if leadingLen > 0 {
+				leading = line[:leadingLen]
+			}
+			rest := line[leadingLen:]
+			commentSpacing := ""
+			comment := ""
+			if idx := strings.Index(rest, "#"); idx >= 0 {
+				before := rest[:idx]
+				comment = rest[idx:]
+				trimmedBefore := strings.TrimRight(before, " \t")
+				commentSpacing = before[len(trimmedBefore):]
+				rest = trimmedBefore
+			}
+			newLine := leading + key + "=" + value
+			if comment != "" {
+				spacing := commentSpacing
+				if spacing == "" {
+					spacing = " "
+				}
+				newLine += spacing + comment
+			}
+			lines[i] = newLine
 			replaced = true
 		}
 	}
@@ -1338,6 +1456,16 @@ func setEnvValue(template, key, value string) string {
 		lines = append(lines, key+"="+value)
 	}
 	return strings.Join(lines, "\n")
+}
+
+func sanitizeEnvValue(value string) string {
+	value = strings.Map(func(r rune) rune {
+		if r == '\n' || r == '\r' || r == '\x00' {
+			return -1
+		}
+		return r
+	}, value)
+	return strings.TrimSpace(value)
 }
 
 func buildSignature() string {

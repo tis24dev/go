@@ -89,6 +89,26 @@ Read the comprehensive migration plan:
 - [QUICKSTART.md](QUICKSTART.md) - Quick setup guide
 - [README-GO.md](README-GO.md) - Go version overview
 
+### Interactive Install (`--install`)
+
+For a fresh node, you can bootstrap the Go configuration file via the built-in wizard:
+
+```bash
+# From /opt/proxmox-backup-go
+make build
+./build/proxmox-backup --install
+```
+
+Wizard overview:
+1. **Target path** – Defaults to `<repo>/configs/backup.env`. If you pass `--config relative/path`, it is resolved relative to the directory above the binary (never inside `build/`). Absolute paths are accepted only if they still live under your repo root.
+2. **Secondary storage** – Optional prompts for secondary backup/log paths; inputs are sanitized (no newlines/control chars).
+3. **Cloud storage** – Optional prompts for the rclone remote used for backups and for log uploads (reminds you to configure rclone manually).
+4. **Notifications** – Toggles for Telegram (centralized) and email relay.
+5. **Encryption** – If enabled, the AGE wizard runs immediately so the server never starts without recipients; all messages from that wizard are suppressed until the menu appears.
+6. **Template preservation** – Inline comments from the embedded template are preserved whenever the wizard updates values.
+
+After the wizard completes, you can edit `configs/backup.env` manually for fine-grained tuning.
+
 Start **Phase 1: Core Infrastructure**:
 1. Implement `internal/config` package
 2. Implement `internal/logging` package
