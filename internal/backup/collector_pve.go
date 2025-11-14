@@ -249,7 +249,7 @@ func (c *Collector) collectPVECommands(ctx context.Context, clustered bool) (*pv
 
 	// Node configuration
 	c.safeCmdOutput(ctx,
-		"pvenode config",
+		"pvenode config get",
 		filepath.Join(commandsDir, "node_config.txt"),
 		"Node configuration",
 		false)
