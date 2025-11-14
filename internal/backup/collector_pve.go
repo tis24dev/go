@@ -1,10 +1,12 @@
 package backup
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -24,6 +26,21 @@ type pveRuntimeInfo struct {
 	Nodes    []string
 	Storages []pveStorageEntry
 }
+
+var defaultPVEBackupPatterns = []string{
+	"*.vma",
+	"*.vma.gz",
+	"*.vma.lz4",
+	"*.vma.zst",
+	"*.tar",
+	"*.tar.gz",
+	"*.tar.lz4",
+	"*.tar.zst",
+	"*.log",
+	"*.notes",
+}
+
+var errStopWalk = errors.New("stop walk")
 
 // CollectPVEConfigs collects Proxmox VE specific configurations
 func (c *Collector) CollectPVEConfigs(ctx context.Context) error {
@@ -170,11 +187,26 @@ func (c *Collector) collectPVEDirectories(ctx context.Context, clustered bool) e
 	// Firewall configuration
 	if c.config.BackupPVEFirewall {
 		firewallSrc := filepath.Join(pveConfigPath, "firewall")
-		if err := c.safeCopyDir(ctx,
-			firewallSrc,
-			c.targetPathFor(firewallSrc),
-			"PVE firewall"); err != nil {
-			c.logger.Debug("No firewall configuration found")
+		if info, err := os.Stat(firewallSrc); err == nil {
+			if info.IsDir() {
+				if err := c.safeCopyDir(ctx,
+					firewallSrc,
+					c.targetPathFor(firewallSrc),
+					"PVE firewall directory"); err != nil {
+					c.logger.Warning("Failed to copy firewall directory: %v", err)
+				}
+			} else {
+				if err := c.safeCopyFile(ctx,
+					firewallSrc,
+					c.targetPathFor(firewallSrc),
+					"PVE firewall configuration"); err != nil {
+					c.logger.Warning("Failed to copy firewall file: %v", err)
+				}
+			}
+		} else if errors.Is(err, os.ErrNotExist) {
+			c.logger.Debug("No firewall configuration found at %s", firewallSrc)
+		} else {
+			c.logger.Warning("Failed to access firewall configuration %s: %v", firewallSrc, err)
 		}
 	}
 
@@ -697,6 +729,10 @@ func (c *Collector) collectPVEStorageMetadata(ctx context.Context, storages []pv
 		if err := c.writeReportFile(filepath.Join(metaDir, "metadata.json"), metaBytes); err != nil {
 			return err
 		}
+
+		if err := c.collectDetailedPVEBackups(ctx, storage, metaDir); err != nil {
+			c.logger.Warning("Detailed backup analysis for %s failed: %v", storage.Name, err)
+		}
 	}
 
 	if processed > 0 {
@@ -710,29 +746,311 @@ func (c *Collector) collectPVEStorageMetadata(ctx context.Context, storages []pv
 	return nil
 }
 
+func (c *Collector) collectDetailedPVEBackups(ctx context.Context, storage pveStorageEntry, metaDir string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	analysisDir := filepath.Join(metaDir, "backup_analysis")
+	if err := c.ensureDir(analysisDir); err != nil {
+		return fmt.Errorf("failed to create backup analysis directory: %w", err)
+	}
+
+	patterns := c.config.PxarFileIncludePatterns
+	if len(patterns) == 0 {
+		patterns = defaultPVEBackupPatterns
+	}
+
+	writers := c.newPatternWriters(storage, analysisDir, patterns)
+	if len(writers) == 0 {
+		c.logger.Debug("No valid backup patterns for datastore %s", storage.Name)
+		return nil
+	}
+	defer func() {
+		for _, w := range writers {
+			if err := w.Close(); err != nil {
+				c.logger.Debug("Failed to close writer for pattern %s: %v", w.pattern, err)
+			}
+		}
+	}()
+
+	var totalFiles int64
+	var totalSize int64
+
+	var smallDir string
+	if c.config.BackupSmallPVEBackups && c.config.MaxPVEBackupSizeBytes > 0 {
+		smallDir = filepath.Join(c.tempDir, "var/lib/pve-cluster/small_backups", storage.Name)
+		if err := c.ensureDir(smallDir); err != nil {
+			c.logger.Warning("Cannot create small backups directory %s: %v", smallDir, err)
+			smallDir = ""
+		}
+	}
+
+	includePattern := strings.TrimSpace(c.config.PVEBackupIncludePattern)
+	var includeDir string
+	if includePattern != "" {
+		includeDir = filepath.Join(c.tempDir, "var/lib/pve-cluster/selected_backups", storage.Name)
+		if err := c.ensureDir(includeDir); err != nil {
+			c.logger.Warning("Cannot create selected backups directory %s: %v", includeDir, err)
+			includeDir = ""
+		}
+	}
+
+	walkErr := filepath.WalkDir(storage.Path, func(path string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			c.logger.Debug("Skipping %s: %v", path, walkErr)
+			return nil
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+
+		info, err := d.Info()
+		if err != nil {
+			c.logger.Debug("Failed to stat %s: %v", path, err)
+			return nil
+		}
+
+		base := filepath.Base(path)
+		matched := false
+		for _, w := range writers {
+			if matchPattern(base, w.pattern) {
+				matched = true
+				if err := w.Write(path, info); err != nil {
+					c.logger.Debug("Failed to log %s for pattern %s: %v", path, w.pattern, err)
+				}
+			}
+		}
+
+		if !matched {
+			return nil
+		}
+
+		totalFiles++
+		totalSize += info.Size()
+
+		if smallDir != "" && info.Size() <= c.config.MaxPVEBackupSizeBytes {
+			if err := c.copyBackupSample(ctx, path, smallDir, fmt.Sprintf("small PVE backup %s", filepath.Base(path))); err != nil {
+				c.logger.Debug("Failed to copy small backup %s: %v", path, err)
+			}
+		}
+		if includeDir != "" && strings.Contains(path, includePattern) {
+			if err := c.copyBackupSample(ctx, path, includeDir, fmt.Sprintf("selected PVE backup %s", filepath.Base(path))); err != nil {
+				c.logger.Debug("Failed to copy pattern backup %s: %v", path, err)
+			}
+		}
+		return nil
+	})
+	if walkErr != nil {
+		return walkErr
+	}
+
+	if err := c.writePatternSummary(storage, analysisDir, writers, totalFiles, totalSize); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (c *Collector) newPatternWriters(storage pveStorageEntry, analysisDir string, patterns []string) []*patternWriter {
+	writers := make([]*patternWriter, 0, len(patterns))
+	seen := make(map[string]struct{})
+	for _, pattern := range patterns {
+		pattern = strings.TrimSpace(pattern)
+		if pattern == "" {
+			continue
+		}
+		if _, ok := seen[pattern]; ok {
+			continue
+		}
+		seen[pattern] = struct{}{}
+		pw, err := newPatternWriter(storage.Name, storage.Path, analysisDir, pattern)
+		if err != nil {
+			c.logger.Warning("Failed to prepare writer for pattern %s: %v", pattern, err)
+			continue
+		}
+		writers = append(writers, pw)
+	}
+	return writers
+}
+
+type patternWriter struct {
+	pattern     string
+	storageName string
+	storagePath string
+	filePath    string
+	file        *os.File
+	writer      *bufio.Writer
+	count       int64
+	totalSize   int64
+	errorCount  int64
+}
+
+func newPatternWriter(storageName, storagePath, analysisDir, pattern string) (*patternWriter, error) {
+	clean := cleanPatternName(pattern)
+	filename := fmt.Sprintf("%s_%s_list.txt", storageName, clean)
+	filePath := filepath.Join(analysisDir, filename)
+	file, err := os.OpenFile(filePath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0640)
+	if err != nil {
+		return nil, err
+	}
+	writer := bufio.NewWriter(file)
+	header := fmt.Sprintf("# PVE backup files matching pattern: %s\n# Datastore: %s (%s)\n# Generated on: %s\n# Format: permissions size date path\n\n",
+		pattern,
+		storageName,
+		storagePath,
+		time.Now().Format(time.RFC3339),
+	)
+	if _, err := writer.WriteString(header); err != nil {
+		file.Close()
+		return nil, err
+	}
+	return &patternWriter{
+		pattern:     pattern,
+		storageName: storageName,
+		storagePath: storagePath,
+		filePath:    filePath,
+		file:        file,
+		writer:      writer,
+	}, nil
+}
+
+func (pw *patternWriter) Write(path string, info os.FileInfo) error {
+	if pw.writer == nil {
+		pw.errorCount++
+		return fmt.Errorf("writer closed")
+	}
+	rel, err := filepath.Rel(pw.storagePath, path)
+	if err != nil || strings.HasPrefix(rel, "..") {
+		rel = path
+	}
+	line := fmt.Sprintf("%s %10s %s %s\n",
+		info.Mode().String(),
+		FormatBytes(info.Size()),
+		info.ModTime().Format(time.RFC3339),
+		rel,
+	)
+	if _, err := pw.writer.WriteString(line); err != nil {
+		pw.errorCount++
+		return err
+	}
+	pw.count++
+	pw.totalSize += info.Size()
+	return nil
+}
+
+func (pw *patternWriter) Close() error {
+	var err error
+	if pw.writer != nil {
+		if flushErr := pw.writer.Flush(); flushErr != nil && err == nil {
+			err = flushErr
+		}
+	}
+	if pw.file != nil {
+		if closeErr := pw.file.Close(); closeErr != nil && err == nil {
+			err = closeErr
+		}
+	}
+	pw.writer = nil
+	pw.file = nil
+	return err
+}
+
+func cleanPatternName(pattern string) string {
+	clean := strings.ReplaceAll(pattern, "*", "")
+	clean = strings.ReplaceAll(clean, ".", "_")
+	if clean == "" {
+		return "all"
+	}
+	return clean
+}
+
+func matchPattern(name, pattern string) bool {
+	matched, err := filepath.Match(pattern, name)
+	if err != nil {
+		return false
+	}
+	return matched
+}
+
+func (c *Collector) copyBackupSample(ctx context.Context, src, destDir, description string) error {
+	if err := c.ensureDir(destDir); err != nil {
+		return err
+	}
+	dest := filepath.Join(destDir, filepath.Base(src))
+	return c.safeCopyFile(ctx, src, dest, description)
+}
+
+func (c *Collector) writePatternSummary(storage pveStorageEntry, analysisDir string, writers []*patternWriter, totalFiles, totalSize int64) error {
+	summaryPath := filepath.Join(analysisDir, fmt.Sprintf("%s_backup_summary.txt", storage.Name))
+	file, err := os.OpenFile(summaryPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0640)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	writer := bufio.NewWriter(file)
+	fmt.Fprintf(writer, "# PVE Backup Files Summary for datastore: %s\n", storage.Name)
+	fmt.Fprintf(writer, "# Path: %s\n", storage.Path)
+	fmt.Fprintf(writer, "# Generated on: %s\n\n", time.Now().Format(time.RFC3339))
+
+	for _, w := range writers {
+		fmt.Fprintf(writer, "## Files matching pattern: %s\n", w.pattern)
+		if w.count == 0 {
+			fmt.Fprintln(writer, "  No files found")
+			fmt.Fprintln(writer)
+			continue
+		}
+		fmt.Fprintf(writer, "  Files: %d\n", w.count)
+		if w.errorCount > 0 {
+			fmt.Fprintf(writer, "  Successfully analyzed: %d\n", w.count-w.errorCount)
+			fmt.Fprintf(writer, "  Files with errors: %d\n", w.errorCount)
+		}
+		fmt.Fprintf(writer, "  Total size: %s\n\n", FormatBytes(w.totalSize))
+	}
+
+	fmt.Fprintln(writer, "## Overall Summary")
+	fmt.Fprintf(writer, "Total backup files: %d\n", totalFiles)
+	fmt.Fprintf(writer, "Total backup size: %s\n", FormatBytes(totalSize))
+	if err := writer.Flush(); err != nil {
+		return err
+	}
+	return file.Close()
+}
+
 func (c *Collector) collectPVECephInfo(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	c.logger.Debug("Collecting Ceph cluster information")
 
-	if _, err := exec.LookPath("ceph"); err != nil {
-		c.logger.Debug("Ceph CLI not available, skipping Ceph information collection")
+	if !c.isCephConfigured(ctx) {
+		c.logger.Debug("Ceph not detected on this node, skipping Ceph collection")
 		return nil
 	}
+
+	c.logger.Debug("Collecting Ceph cluster information")
 
 	cephDir := filepath.Join(c.tempDir, "var/lib/pve-cluster/info/ceph")
 	if err := c.ensureDir(cephDir); err != nil {
 		return fmt.Errorf("failed to create ceph directory: %w", err)
 	}
 
-	if _, err := os.Stat("/etc/ceph"); err == nil {
-		if err := c.safeCopyDir(ctx,
-			"/etc/ceph",
-			filepath.Join(c.tempDir, "etc/ceph"),
-			"Ceph configuration"); err != nil {
-			c.logger.Debug("Failed to copy Ceph configuration: %v", err)
+	for _, cephPath := range c.cephConfigPaths() {
+		if info, err := os.Stat(cephPath); err == nil && info.IsDir() {
+			if err := c.safeCopyDir(ctx,
+				cephPath,
+				c.targetPathFor(cephPath),
+				fmt.Sprintf("Ceph configuration (%s)", cephPath)); err != nil {
+				c.logger.Debug("Failed to copy Ceph configuration from %s: %v", cephPath, err)
+			}
 		}
+	}
+
+	if _, err := exec.LookPath("ceph"); err != nil {
+		c.logger.Debug("Ceph CLI not available, skipping Ceph command outputs")
+		return nil
 	}
 
 	commands := []struct {
@@ -760,26 +1078,43 @@ func (c *Collector) collectPVECephInfo(ctx context.Context) error {
 	return nil
 }
 
-// isClusteredPVE checks if this is a clustered PVE system
+// isClusteredPVE checks if this is a clustered PVE system using multiple heuristics
 func (c *Collector) isClusteredPVE(ctx context.Context) (bool, error) {
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
-	c.logger.Debug("Checking cluster status via pvecm")
 
-	if _, err := exec.LookPath("pvecm"); err != nil {
-		return false, nil
+	if c.hasCorosyncClusterConfig() {
+		c.logger.Debug("Detected cluster via corosync configuration")
+		return true, nil
 	}
 
-	cmd := exec.CommandContext(ctx, "pvecm", "status")
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return false, fmt.Errorf("pvecm status failed: %w", err)
+	if c.hasMultiplePVENodes() {
+		c.logger.Debug("Detected cluster via nodes directory count")
+		return true, nil
 	}
 
-	clustered := strings.Contains(string(output), "Cluster information")
-	c.logger.Debug("pvecm status detected clustered=%v", clustered)
-	return clustered, nil
+	if c.isServiceActive(ctx, "corosync.service") {
+		c.logger.Debug("Detected cluster via corosync.service state")
+		return true, nil
+	}
+
+	// Fallback to pvecm status
+	if _, err := exec.LookPath("pvecm"); err == nil {
+		cmd := exec.CommandContext(ctx, "pvecm", "status")
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			return false, fmt.Errorf("pvecm status failed: %w", err)
+		}
+		clustered := strings.Contains(string(output), "Cluster information")
+		c.logger.Debug("pvecm status detected clustered=%v", clustered)
+		if clustered {
+			return true, nil
+		}
+	}
+
+	c.logger.Debug("Cluster heuristics indicate standalone PVE node")
+	return false, nil
 }
 
 func shortHostname(host string) string {
@@ -787,4 +1122,213 @@ func shortHostname(host string) string {
 		return host[:idx]
 	}
 	return host
+}
+
+func (c *Collector) hasCorosyncClusterConfig() bool {
+	corosyncPath := c.config.CorosyncConfigPath
+	if corosyncPath == "" {
+		corosyncPath = filepath.Join(c.effectivePVEConfigPath(), "corosync.conf")
+	} else if !filepath.IsAbs(corosyncPath) {
+		corosyncPath = filepath.Join(c.effectivePVEConfigPath(), corosyncPath)
+	}
+	data, err := os.ReadFile(corosyncPath)
+	if err != nil {
+		return false
+	}
+	content := strings.ToLower(string(data))
+	for _, key := range []string{"cluster_name", "nodelist", "ring0_addr"} {
+		if strings.Contains(content, key) {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *Collector) hasMultiplePVENodes() bool {
+	nodesDir := filepath.Join(c.effectivePVEConfigPath(), "nodes")
+	entries, err := os.ReadDir(nodesDir)
+	if err != nil {
+		return false
+	}
+	count := 0
+	for _, entry := range entries {
+		if entry.IsDir() {
+			count++
+			if count > 1 {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (c *Collector) isServiceActive(ctx context.Context, service string) bool {
+	if service == "" {
+		return false
+	}
+	if _, err := exec.LookPath("systemctl"); err != nil {
+		return false
+	}
+	cmd := exec.CommandContext(ctx, "systemctl", "is-active", service)
+	if err := cmd.Run(); err == nil {
+		return true
+	}
+	return false
+}
+
+func (c *Collector) isCephConfigured(ctx context.Context) bool {
+	for _, path := range c.cephConfigPaths() {
+		if cephHasClusterConfig(path) || cephHasKeyring(path) {
+			return true
+		}
+	}
+	if c.cephServiceActive(ctx) {
+		return true
+	}
+	if c.cephStorageConfigured(ctx) {
+		return true
+	}
+	if c.cephStatusAvailable(ctx) {
+		return true
+	}
+	if c.cephProcessesRunning(ctx) {
+		return true
+	}
+	return false
+}
+
+func (c *Collector) cephConfigPaths() []string {
+	paths := make([]string, 0, 3)
+	add := func(path string) {
+		path = strings.TrimSpace(path)
+		if path == "" {
+			return
+		}
+		abs := path
+		if !filepath.IsAbs(path) {
+			abs = filepath.Clean(filepath.Join("/", path))
+		}
+		for _, existing := range paths {
+			if existing == abs {
+				return
+			}
+		}
+		paths = append(paths, abs)
+	}
+
+	if c.config.CephConfigPath != "" {
+		add(c.config.CephConfigPath)
+	}
+	add(filepath.Join(c.effectivePVEConfigPath(), "ceph"))
+	add("/etc/ceph")
+	return paths
+}
+
+func cephHasClusterConfig(path string) bool {
+	confPath := filepath.Join(path, "ceph.conf")
+	data, err := os.ReadFile(confPath)
+	if err != nil {
+		return false
+	}
+	content := strings.ToLower(string(data))
+	for _, key := range []string{"fsid", "mon_host", "mon_initial_members"} {
+		if strings.Contains(content, key) {
+			return true
+		}
+	}
+	return false
+}
+
+func cephHasKeyring(path string) bool {
+	info, err := os.Stat(path)
+	if err != nil || !info.IsDir() {
+		return false
+	}
+	found := false
+	err = filepath.WalkDir(path, func(p string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return nil
+		}
+		if d.IsDir() {
+			return nil
+		}
+		if strings.HasSuffix(strings.ToLower(d.Name()), ".keyring") {
+			found = true
+			return errStopWalk
+		}
+		return nil
+	})
+	if errors.Is(err, errStopWalk) {
+		return true
+	}
+	return found
+}
+
+func (c *Collector) cephServiceActive(ctx context.Context) bool {
+	hostname, _ := os.Hostname()
+	short := shortHostname(hostname)
+	services := []string{
+		"ceph.target",
+		"ceph-mon",
+		"ceph-osd",
+		"ceph-mds",
+		"ceph-mgr",
+	}
+	if short != "" {
+		services = append(services,
+			fmt.Sprintf("ceph-mon@%s", short),
+			fmt.Sprintf("ceph-osd@%s", short),
+			fmt.Sprintf("ceph-mds@%s", short),
+			fmt.Sprintf("ceph-mgr@%s", short))
+	}
+	if hostname != "" && hostname != short {
+		services = append(services,
+			fmt.Sprintf("ceph-mon@%s", hostname),
+			fmt.Sprintf("ceph-osd@%s", hostname),
+			fmt.Sprintf("ceph-mds@%s", hostname),
+			fmt.Sprintf("ceph-mgr@%s", hostname))
+	}
+	for _, svc := range services {
+		if c.isServiceActive(ctx, svc) {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *Collector) cephStorageConfigured(ctx context.Context) bool {
+	if _, err := exec.LookPath("pvesm"); err != nil {
+		return false
+	}
+	cmd := exec.CommandContext(ctx, "pvesm", "status")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return false
+	}
+	lower := strings.ToLower(string(output))
+	return strings.Contains(lower, "cephfs") || strings.Contains(lower, "rbd")
+}
+
+func (c *Collector) cephStatusAvailable(ctx context.Context) bool {
+	if _, err := exec.LookPath("ceph"); err != nil {
+		return false
+	}
+	statusCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(statusCtx, "ceph", "-s")
+	if err := cmd.Run(); err == nil {
+		return true
+	}
+	return false
+}
+
+func (c *Collector) cephProcessesRunning(ctx context.Context) bool {
+	if _, err := exec.LookPath("pgrep"); err != nil {
+		return false
+	}
+	cmd := exec.CommandContext(ctx, "pgrep", "-f", "ceph-")
+	if err := cmd.Run(); err == nil {
+		return true
+	}
+	return false
 }

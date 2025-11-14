@@ -81,16 +81,20 @@ func (c *Collector) addBytesCollected(delta int64) {
 // CollectorConfig holds configuration for backup collection
 type CollectorConfig struct {
 	// PVE-specific collection options
-	BackupVMConfigs      bool
-	BackupClusterConfig  bool
-	BackupPVEFirewall    bool
-	BackupVZDumpConfig   bool
-	BackupPVEACL         bool
-	BackupPVEJobs        bool
-	BackupPVESchedules   bool
-	BackupPVEReplication bool
-	BackupPVEBackupFiles bool
-	BackupCephConfig     bool
+	BackupVMConfigs         bool
+	BackupClusterConfig     bool
+	BackupPVEFirewall       bool
+	BackupVZDumpConfig      bool
+	BackupPVEACL            bool
+	BackupPVEJobs           bool
+	BackupPVESchedules      bool
+	BackupPVEReplication    bool
+	BackupPVEBackupFiles    bool
+	BackupSmallPVEBackups   bool
+	MaxPVEBackupSizeBytes   int64
+	PVEBackupIncludePattern string
+	BackupCephConfig        bool
+	CephConfigPath          string
 
 	// PBS-specific collection options
 	BackupDatastoreConfigs bool
@@ -207,6 +211,9 @@ func (c *CollectorConfig) Validate() error {
 	if c.PxarEnumBudgetMs < 0 {
 		c.PxarEnumBudgetMs = 0
 	}
+	if c.MaxPVEBackupSizeBytes < 0 {
+		return fmt.Errorf("MAX_PVE_BACKUP_SIZE must be >= 0")
+	}
 
 	return nil
 }
@@ -228,16 +235,20 @@ func NewCollector(logger *logging.Logger, config *CollectorConfig, tempDir strin
 func GetDefaultCollectorConfig() *CollectorConfig {
 	return &CollectorConfig{
 		// PVE-specific (all enabled by default)
-		BackupVMConfigs:      true,
-		BackupClusterConfig:  true,
-		BackupPVEFirewall:    true,
-		BackupVZDumpConfig:   true,
-		BackupPVEACL:         true,
-		BackupPVEJobs:        true,
-		BackupPVESchedules:   true,
-		BackupPVEReplication: true,
-		BackupPVEBackupFiles: true,
-		BackupCephConfig:     true,
+		BackupVMConfigs:         true,
+		BackupClusterConfig:     true,
+		BackupPVEFirewall:       true,
+		BackupVZDumpConfig:      true,
+		BackupPVEACL:            true,
+		BackupPVEJobs:           true,
+		BackupPVESchedules:      true,
+		BackupPVEReplication:    true,
+		BackupPVEBackupFiles:    true,
+		BackupSmallPVEBackups:   false,
+		MaxPVEBackupSizeBytes:   0,
+		PVEBackupIncludePattern: "",
+		BackupCephConfig:        true,
+		CephConfigPath:          "/etc/ceph",
 
 		// PBS-specific (all enabled by default)
 		BackupDatastoreConfigs: true,
@@ -276,14 +287,14 @@ func GetDefaultCollectorConfig() *CollectorConfig {
 		PxarFileIncludePatterns:  nil,
 		PxarFileExcludePatterns:  nil,
 
-		ExcludePatterns:   append([]string(nil), defaultExcludePatterns...),
-		CustomBackupPaths: []string{},
-		BackupBlacklist:   []string{},
-		PVEConfigPath:     "/etc/pve",
-		PVEClusterPath:    "/var/lib/pve-cluster",
+		ExcludePatterns:    append([]string(nil), defaultExcludePatterns...),
+		CustomBackupPaths:  []string{},
+		BackupBlacklist:    []string{},
+		PVEConfigPath:      "/etc/pve",
+		PVEClusterPath:     "/var/lib/pve-cluster",
 		CorosyncConfigPath: "/etc/pve/corosync.conf",
-		VzdumpConfigPath:  "/etc/vzdump.conf",
-		PBSDatastorePaths: []string{},
+		VzdumpConfigPath:   "/etc/vzdump.conf",
+		PBSDatastorePaths:  []string{},
 	}
 }
 

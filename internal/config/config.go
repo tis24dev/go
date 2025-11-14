@@ -60,12 +60,12 @@ type Config struct {
 	SecureAccount    string
 
 	// Storage settings
-	SecondaryEnabled bool
-	SecondaryPath    string
-	CloudEnabled     bool
-	CloudRemote      string
-	CloudRemotePath  string
-	CloudUploadMode  string
+	SecondaryEnabled    bool
+	SecondaryPath       string
+	CloudEnabled        bool
+	CloudRemote         string
+	CloudRemotePath     string
+	CloudUploadMode     string
 	CloudParallelJobs   int
 	CloudParallelVerify bool
 
@@ -143,16 +143,20 @@ type Config struct {
 	ExcludePatterns []string
 
 	// PVE-specific collection options
-	BackupVMConfigs      bool
-	BackupClusterConfig  bool
-	BackupPVEFirewall    bool
-	BackupVZDumpConfig   bool
-	BackupPVEACL         bool
-	BackupPVEJobs        bool
-	BackupPVESchedules   bool
-	BackupPVEReplication bool
-	BackupPVEBackupFiles bool
-	BackupCephConfig     bool
+	BackupVMConfigs         bool
+	BackupClusterConfig     bool
+	BackupPVEFirewall       bool
+	BackupVZDumpConfig      bool
+	BackupPVEACL            bool
+	BackupPVEJobs           bool
+	BackupPVESchedules      bool
+	BackupPVEReplication    bool
+	BackupPVEBackupFiles    bool
+	BackupSmallPVEBackups   bool
+	MaxPVEBackupSizeBytes   int64
+	PVEBackupIncludePattern string
+	BackupCephConfig        bool
+	CephConfigPath          string
 
 	// PBS-specific collection options
 	BackupDatastoreConfigs   bool
@@ -488,7 +492,17 @@ func (c *Config) parse() error {
 	c.BackupPVESchedules = c.getBool("BACKUP_PVE_SCHEDULES", true)
 	c.BackupPVEReplication = c.getBool("BACKUP_PVE_REPLICATION", true)
 	c.BackupPVEBackupFiles = c.getBool("BACKUP_PVE_BACKUP_FILES", true)
+	c.BackupSmallPVEBackups = c.getBool("BACKUP_SMALL_PVE_BACKUPS", false)
+	if rawSize := strings.TrimSpace(c.getString("MAX_PVE_BACKUP_SIZE", "")); rawSize != "" {
+		sizeBytes, err := parseSizeToBytes(rawSize)
+		if err != nil {
+			return fmt.Errorf("invalid MAX_PVE_BACKUP_SIZE: %w", err)
+		}
+		c.MaxPVEBackupSizeBytes = sizeBytes
+	}
+	c.PVEBackupIncludePattern = strings.TrimSpace(c.getString("PVE_BACKUP_INCLUDE_PATTERN", ""))
 	c.BackupCephConfig = c.getBool("BACKUP_CEPH_CONFIG", true)
+	c.CephConfigPath = c.getString("CEPH_CONFIG_PATH", "/etc/ceph")
 	c.PVEConfigPath = c.getString("PVE_CONFIG_PATH", "/etc/pve")
 	c.PVEClusterPath = c.getString("PVE_CLUSTER_PATH", "/var/lib/pve-cluster")
 	defaultCorosync := filepath.Join(c.PVEConfigPath, "corosync.conf")
@@ -503,8 +517,8 @@ func (c *Config) parse() error {
 	c.BackupVerificationJobs = c.getBool("BACKUP_VERIFICATION_JOBS", true)
 	c.BackupTapeConfigs = c.getBool("BACKUP_TAPE_CONFIGS", true)
 	c.BackupPruneSchedules = c.getBool("BACKUP_PRUNE_SCHEDULES", true)
-    // PXAR scan enable: prefer new key PXAR_SCAN_ENABLE, fallback to legacy BACKUP_PXAR_FILES
-    c.BackupPxarFiles = c.getBoolWithFallback([]string{"PXAR_SCAN_ENABLE", "BACKUP_PXAR_FILES"}, true)
+	// PXAR scan enable: prefer new key PXAR_SCAN_ENABLE, fallback to legacy BACKUP_PXAR_FILES
+	c.BackupPxarFiles = c.getBoolWithFallback([]string{"PXAR_SCAN_ENABLE", "BACKUP_PXAR_FILES"}, true)
 	c.PxarDatastoreConcurrency = c.getInt("PXAR_SCAN_DS_CONCURRENCY", 3)
 	c.PxarIntraConcurrency = c.getInt("PXAR_SCAN_INTRA_CONCURRENCY", 4)
 	c.PxarScanFanoutLevel = c.getInt("PXAR_SCAN_FANOUT_LEVEL", 2)
@@ -706,6 +720,47 @@ func (c *Config) getIntWithFallback(keys []string, defaultValue int) int {
 		}
 	}
 	return defaultValue
+}
+
+func parseSizeToBytes(value string) (int64, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0, nil
+	}
+
+	multiplier := float64(1)
+	last := value[len(value)-1]
+	switch last {
+	case 'k', 'K':
+		multiplier = 1024
+		value = strings.TrimSpace(value[:len(value)-1])
+	case 'm', 'M':
+		multiplier = 1024 * 1024
+		value = strings.TrimSpace(value[:len(value)-1])
+	case 'g', 'G':
+		multiplier = 1024 * 1024 * 1024
+		value = strings.TrimSpace(value[:len(value)-1])
+	case 't', 'T':
+		multiplier = 1024 * 1024 * 1024 * 1024
+		value = strings.TrimSpace(value[:len(value)-1])
+	}
+
+	if value == "" {
+		return 0, fmt.Errorf("missing numeric value")
+	}
+
+	num, err := strconv.ParseFloat(value, 64)
+	if err != nil {
+		return 0, err
+	}
+	if num < 0 {
+		return 0, fmt.Errorf("size must be positive")
+	}
+	bytes := int64(num * multiplier)
+	if bytes < 0 {
+		bytes = 0
+	}
+	return bytes, nil
 }
 
 func (c *Config) getFloat(key string, defaultValue float64) float64 {

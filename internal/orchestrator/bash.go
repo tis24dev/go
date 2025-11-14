@@ -1266,7 +1266,11 @@ func applyCollectorOverrides(cc *backup.CollectorConfig, cfg *config.Config) {
 	cc.BackupPVESchedules = cfg.BackupPVESchedules
 	cc.BackupPVEReplication = cfg.BackupPVEReplication
 	cc.BackupPVEBackupFiles = cfg.BackupPVEBackupFiles
+	cc.BackupSmallPVEBackups = cfg.BackupSmallPVEBackups
+	cc.MaxPVEBackupSizeBytes = cfg.MaxPVEBackupSizeBytes
+	cc.PVEBackupIncludePattern = cfg.PVEBackupIncludePattern
 	cc.BackupCephConfig = cfg.BackupCephConfig
+	cc.CephConfigPath = cfg.CephConfigPath
 
 	cc.BackupDatastoreConfigs = cfg.BackupDatastoreConfigs
 	cc.BackupUserConfigs = cfg.BackupUserConfigs
