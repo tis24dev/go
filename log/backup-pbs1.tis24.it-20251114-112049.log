@@ -1,0 +1,96 @@
+[2025-11-14 11:20:49] INFO     Log file opened: /opt/proxmox-backup-go/log/backup-pbs1.tis24.it-20251114-112049.log
+[2025-11-14 11:20:49] INFO     Environment: pbs 3.4.6
+[2025-11-14 11:20:49] INFO     Backup enabled: true
+[2025-11-14 11:20:49] INFO     Debug level: INFO
+[2025-11-14 11:20:49] INFO     Compression: xz (level 9, mode ultra)
+[2025-11-14 11:20:49] INFO     Base directory: /opt/proxmox-backup-go (auto-detected from executable path)
+[2025-11-14 11:20:49] INFO     Configuration file: ./configs/backup.env (default path)
+[2025-11-14 11:20:49] INFO     Server ID: 1173879437561689
+[2025-11-14 11:20:49] INFO     Server MAC Address: bc:24:11:41:0d:18
+[2025-11-14 11:20:49] INFO     Server Telegram: Telegram disabled
+[2025-11-14 11:20:49] INFO     Running security preflight checks...
+[2025-11-14 11:20:49] INFO     Checking dependencies...
+[2025-11-14 11:20:49] INFO     Dependencies check completed: all required dependencies available (optional missing: ceph)
+[2025-11-14 11:20:49] WARNING  Optional dependency ceph missing: Ceph configuration collection enabled
+[2025-11-14 11:20:49] WARNING  Security warning: incorrect permissions on /opt/proxmox-backup-go/build/proxmox-backup (current 755, expected 700)
+[2025-11-14 11:20:49] INFO     Adjusted permissions on /opt/proxmox-backup-go/build/proxmox-backup to 700
+[2025-11-14 11:20:49] WARNING  Security warning: executable hash mismatch for /opt/proxmox-backup-go/build/proxmox-backup
+[2025-11-14 11:20:49] INFO     Regenerated hash file: /opt/proxmox-backup-go/build/proxmox-backup.md5
+[2025-11-14 11:20:49] INFO     Security checks completed: 1 warning(s), 0 error(s)
+[2025-11-14 11:20:49] INFO     Initializing backup orchestrator...
+[2025-11-14 11:20:49] INFO     ✓ Orchestrator initialized
+[2025-11-14 11:20:49] INFO     Verifying directory structure...
+[2025-11-14 11:20:49] INFO     ✓ Backup directory exists: /opt/proxmox-backup-go/backup
+[2025-11-14 11:20:49] INFO     ✓ Log directory exists: /opt/proxmox-backup-go/log
+[2025-11-14 11:20:49] INFO     ✓ Lock directory exists: /opt/proxmox-backup-go/lock
+[2025-11-14 11:20:49] INFO     Initializing storage backends...
+[2025-11-14 11:20:49] INFO     Path Primary: /opt/proxmox-backup-go/backup -> Filesystem: ext4 (supports ownership) [mount: /]
+[2025-11-14 11:20:49] INFO     ✓ Local storage initialized (present 1 backup, retention 15 backups)
+[2025-11-14 11:20:49] INFO     Path Secondary: disabled
+[2025-11-14 11:20:49] INFO     Path Cloud: disabled
+[2025-11-14 11:20:49] INFO     Initializing notification channels...
+[2025-11-14 11:20:49] INFO     Telegram notifications: disabled
+[2025-11-14 11:20:49] INFO     ✓ Email notifications initialized (method: relay)
+[2025-11-14 11:20:49] INFO     Webhook notifications: disabled
+[2025-11-14 11:20:49] INFO     Validating bash script environment...
+[2025-11-14 11:20:49] INFO     ✓ Bash scripts directory exists: /opt/proxmox-backup/script
+[2025-11-14 11:20:49] INFO     Storage configuration:
+[2025-11-14 11:20:49] INFO       Primary: /opt/proxmox-backup-go/backup [ext4]
+[2025-11-14 11:20:49] INFO       Secondary storage: disabled
+[2025-11-14 11:20:49] INFO       Cloud storage: disabled
+[2025-11-14 11:20:49] INFO     Log configuration:
+[2025-11-14 11:20:49] INFO       Primary: /opt/proxmox-backup-go/log
+[2025-11-14 11:20:49] INFO       Secondary: disabled
+[2025-11-14 11:20:49] INFO       Cloud: disabled
+[2025-11-14 11:20:49] INFO     Notification configuration:
+[2025-11-14 11:20:49] INFO       Telegram: false
+[2025-11-14 11:20:49] INFO       Email: true
+[2025-11-14 11:20:49] INFO       Metrics: false
+[2025-11-14 11:20:49] INFO     Running pre-backup validation checks...
+[2025-11-14 11:20:49] INFO     ✓ Directories: All required directories exist
+[2025-11-14 11:20:49] INFO     ✓ Disk Space: Sufficient disk space on all configured destinations
+[2025-11-14 11:20:49] INFO     ✓ Permissions: All directories are writable
+[2025-11-14 11:20:49] INFO     ✓ Lock File: Lock file acquired successfully
+[2025-11-14 11:20:49] INFO     All pre-backup checks passed
+[2025-11-14 11:20:49] INFO     Starting Go backup orchestration...
+[2025-11-14 11:20:49] INFO     Starting Go-based backup orchestration for pbs
+[2025-11-14 11:20:49] INFO     Cleanup of previous execution files completed successfully (3 item(s) removed: 1 file(s), 2 dir(s))
+[2025-11-14 11:20:49] INFO     Step 1/8: [34mInitializing backup statistics and temporary workspace[0m
+[2025-11-14 11:20:49] INFO     Step 2/8: [34mCollection of configuration files and optimizations[0m
+[2025-11-14 11:20:49] INFO     Collecting configuration files...
+[2025-11-14 11:20:49] INFO     Starting backup collection for pbs
+[2025-11-14 11:20:49] INFO     Collecting PBS configurations
+[2025-11-14 11:20:50] INFO     PBS configuration collection completed
+[2025-11-14 11:20:50] INFO     Collecting system information
+[2025-11-14 11:20:51] INFO     System information collection completed
+[2025-11-14 11:20:51] INFO     Collection completed: 652 files (3.2 MiB), 0 failed, 47 dirs created
+[2025-11-14 11:20:51] INFO     Running backup optimizations on collected data...
+[2025-11-14 11:20:51] INFO     Running backup optimizations (chunking=true dedup=true prefilter=true)
+[2025-11-14 11:20:51] INFO     Deduplication completed: 35 duplicates replaced
+[2025-11-14 11:20:51] INFO     Prefilter completed: 195 files optimized
+[2025-11-14 11:20:51] INFO     Chunking completed: 0 large files processed
+[2025-11-14 11:20:51] INFO     Step 3/8: [34mCreation of compressed archive[0m
+[2025-11-14 11:20:51] INFO     Creating compressed archive...
+[2025-11-14 11:20:51] INFO     Creating compressed archive with xz (level 9, mode ultra, threads auto)
+[2025-11-14 11:20:51] INFO     [XZ] xz: Reduced the number of threads from 4 to 3 to not exceed the memory usage limit of 3,994 MiB
+[2025-11-14 11:20:52] INFO     Step 4/8: [34mVerification of archive and metadata generation[0m
+[2025-11-14 11:20:52] INFO     Step 5/8: [34mBundling of archive, checksum and metadata[0m
+[2025-11-14 11:20:52] INFO     ✓ Archive created and verified
+[2025-11-14 11:20:52] INFO     Step 6/8: [34mDispatching archive to 1 storage target(s)[0m
+[2025-11-14 11:20:52] INFO     Local Storage: Storing backup...
+[2025-11-14 11:20:52] INFO     ✓ Local Storage: Backup stored successfully
+[2025-11-14 11:20:52] INFO     Local Storage: Applying retention policy (keeping 15 backups)...
+[2025-11-14 11:20:52] INFO     Local Storage statistics:
+[2025-11-14 11:20:52] INFO       Total backups: 2
+[2025-11-14 11:20:52] INFO       Total size: 2.1 MiB
+[2025-11-14 11:20:52] INFO       Filesystem: ext4
+[2025-11-14 11:20:52] INFO     ✓ Local Storage operations completed
+[2025-11-14 11:20:52] INFO     Step 7/8: [34mNotifications - dispatching channels[0m
+[2025-11-14 11:20:53] INFO     Starting Email notification...
+[2025-11-14 11:20:53] WARNING  WARNING: Cloud relay failed: rate limit exceeded: Daily quota exceeded for this server (3/day). Write me on github for higher limits
+[2025-11-14 11:20:53] INFO     Attempting fallback to sendmail...
+[2025-11-14 11:20:53] WARNING  ⚠️ Email sent via fallback after relay failure
+[2025-11-14 11:20:53] INFO     Email provider confirmed delivery to homelab@tis24.it via sendmail fallback
+[2025-11-14 11:20:53] WARNING  ⚠️ Email notification sent via fallback in 379.562259ms
+[2025-11-14 11:20:53] INFO     Step 8/8: [34mLog file management - close, copy, and rotate[0m
+[2025-11-14 11:20:53] INFO     Closing log file: /opt/proxmox-backup-go/log/backup-pbs1.tis24.it-20251114-112049.log

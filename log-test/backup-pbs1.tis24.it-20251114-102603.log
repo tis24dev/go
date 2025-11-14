@@ -1,0 +1,464 @@
+[2025-11-14 10:26:03] INFO     Log file opened: /opt/proxmox-backup-go/log-test/backup-pbs1.tis24.it-20251114-102603.log
+[2025-11-14 10:26:03] INFO     DRY RUN MODE: No actual changes will be made
+[2025-11-14 10:26:03] INFO     Environment: pbs 3.4.6
+[2025-11-14 10:26:03] INFO     Backup enabled: true
+[2025-11-14 10:26:03] INFO     Debug level: DEBUG
+[2025-11-14 10:26:03] INFO     Compression: xz (level 9, mode ultra)
+[2025-11-14 10:26:03] INFO     Base directory: /opt/proxmox-backup-go (auto-detected from executable path)
+[2025-11-14 10:26:03] INFO     Configuration file: ./configs/backup.env (default path)
+[2025-11-14 10:26:03] DEBUG    Identity: detected 1 MAC addresses (primary: bc:24:11:41:0d:18)
+[2025-11-14 10:26:03] DEBUG    Identity: loaded existing server ID 1173879437561689 from /opt/proxmox-backup-go/identity/.server_identity
+[2025-11-14 10:26:03] INFO     Server ID: 1173879437561689
+[2025-11-14 10:26:03] INFO     Server MAC Address: bc:24:11:41:0d:18
+[2025-11-14 10:26:03] DEBUG    Contacting remote Telegram server...
+[2025-11-14 10:26:04] DEBUG    Remote server contacted: Bot token / chat ID verified (handshake)
+[2025-11-14 10:26:04] INFO     Server Telegram: 200 - Registration active
+[2025-11-14 10:26:04] INFO     Running security preflight checks...
+[2025-11-14 10:26:04] DEBUG    Security options: auto_fix=true, auto_update_hashes=true, continue_on_issues=false, check_network=false, firewall=false, open_ports=false, suspicious_processes=7, safe_bracket=5
+[2025-11-14 10:26:04] INFO     Checking dependencies...
+[2025-11-14 10:26:04] DEBUG    Dependency tar: present (tar at /usr/bin/tar) - required for archive verification and bundle handling
+[2025-11-14 10:26:04] DEBUG    Dependency xz: present (xz at /usr/bin/xz) - compression type set to xz
+[2025-11-14 10:26:04] DEBUG    Dependency sendmail: present (sendmail at /usr/sbin/sendmail) - email relay fallback to sendmail enabled
+[2025-11-14 10:26:04] DEBUG    Dependency ceph: missing (optional) - Ceph configuration collection enabled
+[2025-11-14 10:26:04] DEBUG    Dependency zpool: present (zpool at /usr/sbin/zpool) - ZFS configuration collection enabled
+[2025-11-14 10:26:04] DEBUG    Dependency zfs: present (zfs at /usr/sbin/zfs) - ZFS configuration collection enabled
+[2025-11-14 10:26:04] DEBUG    Dependency proxmox-backup-manager: present (proxmox-backup-manager at /usr/sbin/proxmox-backup-manager) - PBS management CLI
+[2025-11-14 10:26:04] DEBUG    Dependency proxmox-tape: present (proxmox-tape at /usr/bin/proxmox-tape) - PBS tape configuration collection enabled
+[2025-11-14 10:26:04] INFO     Dependencies check completed: all required dependencies available (optional missing: ceph)
+[2025-11-14 10:26:04] WARNING  Optional dependency ceph missing: Ceph configuration collection enabled
+[2025-11-14 10:26:04] INFO     Security checks completed: 1 warning(s), 0 error(s)
+[2025-11-14 10:26:04] INFO     Initializing backup orchestrator...
+[2025-11-14 10:26:04] INFO     ✓ Orchestrator initialized
+[2025-11-14 10:26:04] INFO     Verifying directory structure...
+[2025-11-14 10:26:04] INFO     ✓ Backup directory exists: /opt/proxmox-backup-go/backup-test
+[2025-11-14 10:26:04] INFO     ✓ Log directory exists: /opt/proxmox-backup-go/log-test
+[2025-11-14 10:26:04] INFO     ✓ Secondary log directory exists: /opt/secondary-backup-go/log-secondary-test
+[2025-11-14 10:26:04] INFO     ✓ Lock directory exists: /opt/proxmox-backup-go/lock
+[2025-11-14 10:26:04] DEBUG    Configuring pre-backup validation checks...
+[2025-11-14 10:26:04] DEBUG    ✓ Pre-backup checks configured
+[2025-11-14 10:26:04] INFO     Initializing storage backends...
+[2025-11-14 10:26:04] DEBUG    Path: /opt/proxmox-backup-go/backup-test -> Filesystem: ext4 (supports ownership) [mount: /]
+[2025-11-14 10:26:04] INFO     Path Primary: /opt/proxmox-backup-go/backup-test -> Filesystem: ext4 (supports ownership) [mount: /]
+[2025-11-14 10:26:04] INFO     ✓ Local storage initialized (present 7 backups, retention 7 backups)
+[2025-11-14 10:26:04] DEBUG    Path: /opt/secondary-backup-go/backup-secondary-test -> Filesystem: ext4 (supports ownership) [mount: /]
+[2025-11-14 10:26:04] INFO     Path Secondary: /opt/secondary-backup-go/backup-secondary-test -> Filesystem: ext4 (supports ownership) [mount: /]
+[2025-11-14 10:26:04] INFO     ✓ Secondary storage initialized (present 6 backups, retention 14 backups)
+[2025-11-14 10:26:04] INFO     Path Cloud: disabled
+[2025-11-14 10:26:04] INFO     Initializing notification channels...
+[2025-11-14 10:26:04] INFO     ✓ Telegram notifications initialized (mode: centralized)
+[2025-11-14 10:26:04] INFO     ✓ Email notifications initialized (method: relay)
+[2025-11-14 10:26:04] INFO     Webhook notifications: disabled
+[2025-11-14 10:26:04] INFO     Validating bash script environment...
+[2025-11-14 10:26:04] INFO     ✓ Bash scripts directory exists: /opt/proxmox-backup/script
+[2025-11-14 10:26:04] INFO     Storage configuration:
+[2025-11-14 10:26:04] INFO       Primary: /opt/proxmox-backup-go/backup-test [ext4]
+[2025-11-14 10:26:04] INFO       Secondary storage: /opt/secondary-backup-go/backup-secondary-test [ext4]
+[2025-11-14 10:26:04] INFO       Cloud storage: disabled
+[2025-11-14 10:26:04] INFO     Log configuration:
+[2025-11-14 10:26:04] INFO       Primary: /opt/proxmox-backup-go/log-test
+[2025-11-14 10:26:04] INFO       Secondary: /opt/secondary-backup-go/log-secondary-test
+[2025-11-14 10:26:04] INFO       Cloud: disabled
+[2025-11-14 10:26:04] INFO     Notification configuration:
+[2025-11-14 10:26:04] INFO       Telegram: true
+[2025-11-14 10:26:04] INFO       Email: true
+[2025-11-14 10:26:04] INFO       Metrics: false
+[2025-11-14 10:26:04] DEBUG    Go backup pipeline enabled
+[2025-11-14 10:26:04] INFO     Running pre-backup validation checks...
+[2025-11-14 10:26:04] DEBUG    Running pre-backup validation checks
+[2025-11-14 10:26:04] DEBUG    All required directories exist
+[2025-11-14 10:26:04] DEBUG    Sufficient disk space on all configured destinations
+[2025-11-14 10:26:04] DEBUG    [DRY RUN] Would test write permission in: /opt/proxmox-backup-go/backup-test
+[2025-11-14 10:26:04] DEBUG    [DRY RUN] Would test write permission in: /opt/proxmox-backup-go/log-test
+[2025-11-14 10:26:04] DEBUG    All directories are writable
+[2025-11-14 10:26:04] INFO     [DRY RUN] Would create lock file: /opt/proxmox-backup-go/lock/.backup.lock
+[2025-11-14 10:26:04] DEBUG    Lock file acquired successfully
+[2025-11-14 10:26:04] DEBUG    All pre-backup checks passed
+[2025-11-14 10:26:04] INFO     ✓ Directories: All required directories exist
+[2025-11-14 10:26:04] INFO     ✓ Disk Space: Sufficient disk space on all configured destinations
+[2025-11-14 10:26:04] INFO     ✓ Permissions: All directories are writable
+[2025-11-14 10:26:04] INFO     ✓ Lock File: Lock file acquired successfully
+[2025-11-14 10:26:04] INFO     All pre-backup checks passed
+[2025-11-14 10:26:04] INFO     Starting Go backup orchestration...
+[2025-11-14 10:26:04] INFO     Starting Go-based backup orchestration for pbs
+[2025-11-14 10:26:04] DEBUG    Starting cleanup of previous execution files...
+[2025-11-14 10:26:04] DEBUG    Checking for orphaned temp directories older than 24h0m0s
+[2025-11-14 10:26:04] DEBUG    Cleaning orphaned temp dir /tmp/proxmox-backup-pbs1.tis24.it-20251114-102555-816439921 (pid=37635)...
+[2025-11-14 10:26:04] DEBUG    Cleaned orphaned temp dir /tmp/proxmox-backup-pbs1.tis24.it-20251114-102555-816439921 (pid=37635)
+[2025-11-14 10:26:04] INFO     Cleaned orphaned temp dir
+[2025-11-14 10:26:04] DEBUG    Cleanup of previous execution files completed successfully (1 item(s) removed: 0 file(s), 1 dir(s))
+[2025-11-14 10:26:04] INFO     Step 1/8: [34mInitializing backup statistics and temporary workspace[0m
+[2025-11-14 10:26:04] DEBUG    Creating temporary directory for collection output
+[2025-11-14 10:26:04] INFO     [DRY RUN] Temporary directory would be: /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396
+[2025-11-14 10:26:04] INFO     Step 2/8: [34mCollection of configuration files and optimizations[0m
+[2025-11-14 10:26:04] INFO     Collecting configuration files...
+[2025-11-14 10:26:04] DEBUG    Collector dry-run=true excludePatterns=6
+[2025-11-14 10:26:04] DEBUG    Starting collector run (type=pbs)
+[2025-11-14 10:26:04] INFO     Starting backup collection for pbs
+[2025-11-14 10:26:04] DEBUG    Collector dry-run=true tempDir=/tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396
+[2025-11-14 10:26:04] DEBUG    Invoking PBS-specific collectors (datastores, users, namespaces, pxar metadata)
+[2025-11-14 10:26:04] INFO     Collecting PBS configurations
+[2025-11-14 10:26:04] DEBUG    Validating PBS environment before collection
+[2025-11-14 10:26:04] DEBUG    Detected /etc/proxmox-backup, proceeding with PBS collection
+[2025-11-14 10:26:04] DEBUG    Collecting PBS configuration directories
+[2025-11-14 10:26:04] DEBUG    Collecting PBS directories (/etc/proxmox-backup, configs, schedules)
+[2025-11-14 10:26:04] DEBUG    Collecting directory PBS configuration: /etc/proxmox-backup -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/etc/proxmox-backup
+[2025-11-14 10:26:04] DEBUG    [DRY RUN] Would copy directory: /etc/proxmox-backup -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/etc/proxmox-backup
+[2025-11-14 10:26:04] DEBUG    Collecting Datastore configuration: /etc/proxmox-backup/datastore.cfg -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/etc/proxmox-backup/datastore.cfg
+[2025-11-14 10:26:04] DEBUG    [DRY RUN] Would copy file: /etc/proxmox-backup/datastore.cfg -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/etc/proxmox-backup/datastore.cfg
+[2025-11-14 10:26:04] DEBUG    Collecting User configuration: /etc/proxmox-backup/user.cfg -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/etc/proxmox-backup/user.cfg
+[2025-11-14 10:26:04] DEBUG    [DRY RUN] Would copy file: /etc/proxmox-backup/user.cfg -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/etc/proxmox-backup/user.cfg
+[2025-11-14 10:26:04] DEBUG    Collecting ACL configuration: /etc/proxmox-backup/acl.cfg -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/etc/proxmox-backup/acl.cfg
+[2025-11-14 10:26:04] DEBUG    [DRY RUN] Would copy file: /etc/proxmox-backup/acl.cfg -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/etc/proxmox-backup/acl.cfg
+[2025-11-14 10:26:04] DEBUG    Collecting Remote configuration: /etc/proxmox-backup/remote.cfg -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/etc/proxmox-backup/remote.cfg
+[2025-11-14 10:26:04] DEBUG    Remote configuration not found: /etc/proxmox-backup/remote.cfg (skipping)
+[2025-11-14 10:26:04] DEBUG    Collecting Sync configuration: /etc/proxmox-backup/sync.cfg -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/etc/proxmox-backup/sync.cfg
+[2025-11-14 10:26:04] DEBUG    Sync configuration not found: /etc/proxmox-backup/sync.cfg (skipping)
+[2025-11-14 10:26:04] DEBUG    Collecting Verification configuration: /etc/proxmox-backup/verification.cfg -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/etc/proxmox-backup/verification.cfg
+[2025-11-14 10:26:04] DEBUG    [DRY RUN] Would copy file: /etc/proxmox-backup/verification.cfg -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/etc/proxmox-backup/verification.cfg
+[2025-11-14 10:26:04] DEBUG    Collecting Tape configuration: /etc/proxmox-backup/tape.cfg -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/etc/proxmox-backup/tape.cfg
+[2025-11-14 10:26:04] DEBUG    Tape configuration not found: /etc/proxmox-backup/tape.cfg (skipping)
+[2025-11-14 10:26:04] DEBUG    Collecting Media pool configuration: /etc/proxmox-backup/media-pool.cfg -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/etc/proxmox-backup/media-pool.cfg
+[2025-11-14 10:26:04] DEBUG    Media pool configuration not found: /etc/proxmox-backup/media-pool.cfg (skipping)
+[2025-11-14 10:26:04] DEBUG    Collecting Network configuration: /etc/proxmox-backup/network.cfg -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/etc/proxmox-backup/network.cfg
+[2025-11-14 10:26:04] DEBUG    Network configuration not found: /etc/proxmox-backup/network.cfg (skipping)
+[2025-11-14 10:26:04] DEBUG    Collecting Prune configuration: /etc/proxmox-backup/prune.cfg -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/etc/proxmox-backup/prune.cfg
+[2025-11-14 10:26:04] DEBUG    [DRY RUN] Would copy file: /etc/proxmox-backup/prune.cfg -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/etc/proxmox-backup/prune.cfg
+[2025-11-14 10:26:04] DEBUG    PBS directory collection finished
+[2025-11-14 10:26:04] DEBUG    PBS directory collection completed
+[2025-11-14 10:26:04] DEBUG    Enumerating PBS datastores via proxmox-backup-manager
+[2025-11-14 10:26:04] DEBUG    Detected 1 configured datastores
+[2025-11-14 10:26:04] DEBUG    Detected 1 PBS datastores
+[2025-11-14 10:26:04] DEBUG    Collecting PBS command outputs and state
+[2025-11-14 10:26:04] DEBUG    [DRY RUN] Would create directory: /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/commands
+[2025-11-14 10:26:04] DEBUG    Collecting PBS command outputs into /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/commands
+[2025-11-14 10:26:04] DEBUG    [DRY RUN] Would create directory: /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/var/lib/proxmox-backup
+[2025-11-14 10:26:04] DEBUG    PBS state snapshots will be stored in /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/var/lib/proxmox-backup
+[2025-11-14 10:26:04] DEBUG    [DRY RUN] Would execute command: proxmox-backup-manager version > /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/commands/pbs_version.txt
+[2025-11-14 10:26:04] DEBUG    Collecting Node configuration via command: proxmox-backup-manager node show --output-format=json > /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/commands/node_config.json
+[2025-11-14 10:26:04] DEBUG    [DRY RUN] Would execute command: proxmox-backup-manager node show --output-format=json > /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/commands/node_config.json
+[2025-11-14 10:26:04] DEBUG    [DRY RUN] Would execute command: proxmox-backup-manager datastore list --output-format=json > /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/commands/datastore_list.json
+[2025-11-14 10:26:04] DEBUG    Collecting Datastore backup_ext status via command: proxmox-backup-manager datastore show backup_ext --output-format=json > /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/commands/datastore_backup_ext_status.json
+[2025-11-14 10:26:04] DEBUG    [DRY RUN] Would execute command: proxmox-backup-manager datastore show backup_ext --output-format=json > /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/commands/datastore_backup_ext_status.json
+[2025-11-14 10:26:04] DEBUG    [DRY RUN] Would execute command: proxmox-backup-manager user list --output-format=json > /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/commands/user_list.json
+[2025-11-14 10:26:04] DEBUG    [DRY RUN] Would execute command: proxmox-backup-manager acl list --output-format=json > /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/commands/acl_list.json
+[2025-11-14 10:26:04] DEBUG    [DRY RUN] Would execute command: proxmox-backup-manager remote list --output-format=json > /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/commands/remote_list.json
+[2025-11-14 10:26:04] DEBUG    [DRY RUN] Would execute command: proxmox-backup-manager sync-job list --output-format=json > /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/commands/sync_jobs.json
+[2025-11-14 10:26:04] DEBUG    [DRY RUN] Would execute command: proxmox-backup-manager verify-job list --output-format=json > /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/commands/verification_jobs.json
+[2025-11-14 10:26:04] DEBUG    [DRY RUN] Would execute command: proxmox-backup-manager prune-job list --output-format=json > /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/commands/prune_jobs.json
+[2025-11-14 10:26:04] DEBUG    Collecting Garbage collection jobs via command: proxmox-backup-manager garbage-collection list --output-format=json > /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/commands/gc_jobs.json
+[2025-11-14 10:26:04] DEBUG    [DRY RUN] Would execute command: proxmox-backup-manager garbage-collection list --output-format=json > /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/commands/gc_jobs.json
+[2025-11-14 10:26:04] DEBUG    Checking PBS tape support configuration
+[2025-11-14 10:26:04] DEBUG    Tape drive inventory detected=false
+[2025-11-14 10:26:04] DEBUG    Collecting Network configuration via command: proxmox-backup-manager network list --output-format=json > /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/commands/network_list.json
+[2025-11-14 10:26:04] DEBUG    [DRY RUN] Would execute command: proxmox-backup-manager network list --output-format=json > /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/commands/network_list.json
+[2025-11-14 10:26:04] DEBUG    Collecting Disk list via command: proxmox-backup-manager disk list --output-format=json > /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/commands/disk_list.json
+[2025-11-14 10:26:04] DEBUG    [DRY RUN] Would execute command: proxmox-backup-manager disk list --output-format=json > /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/commands/disk_list.json
+[2025-11-14 10:26:04] DEBUG    [DRY RUN] Would execute command: proxmox-backup-manager cert info > /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/commands/cert_info.txt
+[2025-11-14 10:26:04] DEBUG    Collecting Traffic control rules via command: proxmox-backup-manager traffic-control list --output-format=json > /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/commands/traffic_control.json
+[2025-11-14 10:26:04] DEBUG    [DRY RUN] Would execute command: proxmox-backup-manager traffic-control list --output-format=json > /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/commands/traffic_control.json
+[2025-11-14 10:26:04] DEBUG    Collecting Recent tasks via command: proxmox-backup-manager task list --limit 50 --output-format=json > /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/commands/recent_tasks.json
+[2025-11-14 10:26:04] DEBUG    [DRY RUN] Would execute command: proxmox-backup-manager task list --limit 50 --output-format=json > /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/commands/recent_tasks.json
+[2025-11-14 10:26:04] DEBUG    PBS command output collection completed
+[2025-11-14 10:26:04] DEBUG    Collecting datastore configuration files and namespaces
+[2025-11-14 10:26:04] DEBUG    Collecting datastore details for 1 datastores
+[2025-11-14 10:26:04] DEBUG    [DRY RUN] Would create directory: /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/datastores
+[2025-11-14 10:26:04] DEBUG    Collecting Datastore backup_ext configuration via command: proxmox-backup-manager datastore show backup_ext --output-format=json > /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/datastores/backup_ext_config.json
+[2025-11-14 10:26:04] DEBUG    [DRY RUN] Would execute command: proxmox-backup-manager datastore show backup_ext --output-format=json > /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/datastores/backup_ext_config.json
+[2025-11-14 10:26:04] DEBUG    Collecting namespaces for datastore backup_ext (path: /mnt/pve/backup_ext/pbs_datastore)
+[2025-11-14 10:26:04] DEBUG    Failed to collect namespaces for datastore backup_ext: failed to write namespaces file: open /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/datastores/backup_ext_namespaces.json: no such file or directory
+[2025-11-14 10:26:04] DEBUG    Datastore configuration collection completed
+[2025-11-14 10:26:04] DEBUG    Datastore configuration collection completed
+[2025-11-14 10:26:04] DEBUG    Collecting PBS user and ACL configurations
+[2025-11-14 10:26:04] DEBUG    Collecting PBS user and ACL information
+[2025-11-14 10:26:04] DEBUG    [DRY RUN] Would create directory: /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/users
+[2025-11-14 10:26:04] DEBUG    Collecting PBS API tokens for configured users
+[2025-11-14 10:26:04] DEBUG    User list not available for token export: open /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/commands/user_list.json: no such file or directory
+[2025-11-14 10:26:04] DEBUG    PBS user information collection completed
+[2025-11-14 10:26:04] DEBUG    User configuration collection completed
+[2025-11-14 10:26:04] INFO     PBS configuration collection completed
+[2025-11-14 10:26:04] DEBUG    PBS-specific collection completed
+[2025-11-14 10:26:04] DEBUG    Collecting baseline system information (network/system files, commands, hardware data)
+[2025-11-14 10:26:04] INFO     Collecting system information
+[2025-11-14 10:26:04] DEBUG    Preparing filesystem context for system collection (tempDir=/tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396)
+[2025-11-14 10:26:04] DEBUG    System PATH verified for command execution
+[2025-11-14 10:26:04] DEBUG    Collecting system directories (network, apt, cron, services, ssl, kernel, firewall, etc.)
+[2025-11-14 10:26:04] DEBUG    Collecting system directories into /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396
+[2025-11-14 10:26:04] DEBUG    Collecting network configuration files (/etc/network/*)
+[2025-11-14 10:26:04] DEBUG    Collecting Network interfaces: /etc/network/interfaces -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/etc/network/interfaces
+[2025-11-14 10:26:04] DEBUG    [DRY RUN] Would copy file: /etc/network/interfaces -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/etc/network/interfaces
+[2025-11-14 10:26:04] DEBUG    Collecting directory Network interfaces.d: /etc/network/interfaces.d -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/etc/network/interfaces.d
+[2025-11-14 10:26:05] DEBUG    [DRY RUN] Would copy directory: /etc/network/interfaces.d -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/etc/network/interfaces.d
+[2025-11-14 10:26:05] DEBUG    Collecting hostname/hosts information
+[2025-11-14 10:26:05] DEBUG    Collecting Hostname: /etc/hostname -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/etc/hostname
+[2025-11-14 10:26:05] DEBUG    [DRY RUN] Would copy file: /etc/hostname -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/etc/hostname
+[2025-11-14 10:26:05] DEBUG    Collecting Hosts file: /etc/hosts -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/etc/hosts
+[2025-11-14 10:26:05] DEBUG    [DRY RUN] Would copy file: /etc/hosts -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/etc/hosts
+[2025-11-14 10:26:05] DEBUG    Collecting DNS resolver configuration
+[2025-11-14 10:26:05] DEBUG    Collecting DNS resolver: /etc/resolv.conf -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/etc/resolv.conf
+[2025-11-14 10:26:05] DEBUG    [DRY RUN] Would copy file: /etc/resolv.conf -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/etc/resolv.conf
+[2025-11-14 10:26:05] DEBUG    Collecting timezone configuration
+[2025-11-14 10:26:05] DEBUG    Collecting Timezone configuration: /etc/timezone -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/etc/timezone
+[2025-11-14 10:26:05] DEBUG    [DRY RUN] Would copy file: /etc/timezone -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/etc/timezone
+[2025-11-14 10:26:05] DEBUG    Collecting APT sources and authentication data
+[2025-11-14 10:26:05] DEBUG    Collecting APT sources: /etc/apt/sources.list -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/etc/apt/sources.list
+[2025-11-14 10:26:05] DEBUG    [DRY RUN] Would copy file: /etc/apt/sources.list -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/etc/apt/sources.list
+[2025-11-14 10:26:05] DEBUG    Collecting directory APT sources.list.d: /etc/apt/sources.list.d -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/etc/apt/sources.list.d
+[2025-11-14 10:26:05] DEBUG    [DRY RUN] Would copy directory: /etc/apt/sources.list.d -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/etc/apt/sources.list.d
+[2025-11-14 10:26:05] DEBUG    Collecting APT preferences: /etc/apt/preferences -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/etc/apt/preferences
+[2025-11-14 10:26:05] DEBUG    APT preferences not found: /etc/apt/preferences (skipping)
+[2025-11-14 10:26:05] DEBUG    Collecting directory APT preferences.d: /etc/apt/preferences.d -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/etc/apt/preferences.d
+[2025-11-14 10:26:05] DEBUG    [DRY RUN] Would copy directory: /etc/apt/preferences.d -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/etc/apt/preferences.d
+[2025-11-14 10:26:05] DEBUG    Collecting directory APT GPG keys: /etc/apt/trusted.gpg.d -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/etc/apt/trusted.gpg.d
+[2025-11-14 10:26:05] DEBUG    [DRY RUN] Would copy directory: /etc/apt/trusted.gpg.d -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/etc/apt/trusted.gpg.d
+[2025-11-14 10:26:05] DEBUG    Collecting directory APT apt.conf.d: /etc/apt/apt.conf.d -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/etc/apt/apt.conf.d
+[2025-11-14 10:26:05] DEBUG    [DRY RUN] Would copy directory: /etc/apt/apt.conf.d -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/etc/apt/apt.conf.d
+[2025-11-14 10:26:05] DEBUG    Collecting directory APT auth.conf.d: /etc/apt/auth.conf.d -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/etc/apt/auth.conf.d
+[2025-11-14 10:26:05] DEBUG    [DRY RUN] Would copy directory: /etc/apt/auth.conf.d -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/etc/apt/auth.conf.d
+[2025-11-14 10:26:05] DEBUG    Collecting directory APT keyrings: /etc/apt/keyrings -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/etc/apt/keyrings
+[2025-11-14 10:26:05] DEBUG    [DRY RUN] Would copy directory: /etc/apt/keyrings -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/etc/apt/keyrings
+[2025-11-14 10:26:05] DEBUG    Collecting APT listchanges.conf: /etc/apt/listchanges.conf -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/etc/apt/listchanges.conf
+[2025-11-14 10:26:05] DEBUG    [DRY RUN] Would copy file: /etc/apt/listchanges.conf -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/etc/apt/listchanges.conf
+[2025-11-14 10:26:05] DEBUG    Collecting directory APT listchanges.conf.d: /etc/apt/listchanges.conf.d -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/etc/apt/listchanges.conf.d
+[2025-11-14 10:26:05] DEBUG    [DRY RUN] Would copy directory: /etc/apt/listchanges.conf.d -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/etc/apt/listchanges.conf.d
+[2025-11-14 10:26:05] DEBUG    Collecting cron definitions (system and per-user)
+[2025-11-14 10:26:05] DEBUG    Collecting System crontab: /etc/crontab -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/etc/crontab
+[2025-11-14 10:26:05] DEBUG    [DRY RUN] Would copy file: /etc/crontab -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/etc/crontab
+[2025-11-14 10:26:05] DEBUG    Collecting directory Cron.d directory: /etc/cron.d -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/etc/cron.d
+[2025-11-14 10:26:05] DEBUG    [DRY RUN] Would copy directory: /etc/cron.d -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/etc/cron.d
+[2025-11-14 10:26:05] DEBUG    Collecting directory cron.daily: /etc/cron.daily -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/etc/cron.daily
+[2025-11-14 10:26:05] DEBUG    [DRY RUN] Would copy directory: /etc/cron.daily -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/etc/cron.daily
+[2025-11-14 10:26:05] DEBUG    Collecting directory cron.hourly: /etc/cron.hourly -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/etc/cron.hourly
+[2025-11-14 10:26:05] DEBUG    [DRY RUN] Would copy directory: /etc/cron.hourly -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/etc/cron.hourly
+[2025-11-14 10:26:05] DEBUG    Collecting directory cron.monthly: /etc/cron.monthly -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/etc/cron.monthly
+[2025-11-14 10:26:05] DEBUG    [DRY RUN] Would copy directory: /etc/cron.monthly -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/etc/cron.monthly
+[2025-11-14 10:26:05] DEBUG    Collecting directory cron.weekly: /etc/cron.weekly -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/etc/cron.weekly
+[2025-11-14 10:26:05] DEBUG    [DRY RUN] Would copy directory: /etc/cron.weekly -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/etc/cron.weekly
+[2025-11-14 10:26:05] DEBUG    Collecting directory User crontabs: /var/spool/cron/crontabs -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/var/spool/cron/crontabs
+[2025-11-14 10:26:05] DEBUG    [DRY RUN] Would copy directory: /var/spool/cron/crontabs -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/var/spool/cron/crontabs
+[2025-11-14 10:26:05] DEBUG    Collecting systemd unit definitions
+[2025-11-14 10:26:05] DEBUG    Collecting directory Systemd services: /etc/systemd/system -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/etc/systemd/system
+[2025-11-14 10:26:05] DEBUG    [DRY RUN] Would copy directory: /etc/systemd/system -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/etc/systemd/system
+[2025-11-14 10:26:05] DEBUG    Collecting SSL certificates and keys
+[2025-11-14 10:26:05] DEBUG    Collecting directory SSL certificates: /etc/ssl/certs -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/etc/ssl/certs
+[2025-11-14 10:26:05] DEBUG    [DRY RUN] Would copy directory: /etc/ssl/certs -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/etc/ssl/certs
+[2025-11-14 10:26:05] DEBUG    Collecting directory SSL private keys: /etc/ssl/private -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/etc/ssl/private
+[2025-11-14 10:26:05] DEBUG    [DRY RUN] Would copy directory: /etc/ssl/private -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/etc/ssl/private
+[2025-11-14 10:26:05] DEBUG    Collecting OpenSSL configuration: /etc/ssl/openssl.cnf -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/etc/ssl/openssl.cnf
+[2025-11-14 10:26:05] DEBUG    [DRY RUN] Would copy file: /etc/ssl/openssl.cnf -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/etc/ssl/openssl.cnf
+[2025-11-14 10:26:05] DEBUG    Collecting sysctl configuration files
+[2025-11-14 10:26:05] DEBUG    Collecting Sysctl configuration: /etc/sysctl.conf -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/etc/sysctl.conf
+[2025-11-14 10:26:05] DEBUG    [DRY RUN] Would copy file: /etc/sysctl.conf -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/etc/sysctl.conf
+[2025-11-14 10:26:05] DEBUG    Collecting directory Sysctl.d directory: /etc/sysctl.d -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/etc/sysctl.d
+[2025-11-14 10:26:05] DEBUG    [DRY RUN] Would copy directory: /etc/sysctl.d -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/etc/sysctl.d
+[2025-11-14 10:26:05] DEBUG    Collecting kernel module configuration
+[2025-11-14 10:26:05] DEBUG    Collecting Kernel modules: /etc/modules -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/etc/modules
+[2025-11-14 10:26:05] DEBUG    [DRY RUN] Would copy file: /etc/modules -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/etc/modules
+[2025-11-14 10:26:05] DEBUG    Collecting directory Modprobe.d directory: /etc/modprobe.d -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/etc/modprobe.d
+[2025-11-14 10:26:05] DEBUG    [DRY RUN] Would copy directory: /etc/modprobe.d -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/etc/modprobe.d
+[2025-11-14 10:26:05] DEBUG    Collecting firewall rules (/etc/iptables, nftables)
+[2025-11-14 10:26:05] DEBUG    Collecting directory iptables rules: /etc/iptables -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/etc/iptables
+[2025-11-14 10:26:05] DEBUG    iptables rules not found: /etc/iptables (skipping)
+[2025-11-14 10:26:05] DEBUG    Collecting directory nftables rules: /etc/nftables.d -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/etc/nftables.d
+[2025-11-14 10:26:05] DEBUG    nftables rules not found: /etc/nftables.d (skipping)
+[2025-11-14 10:26:05] DEBUG    Collecting nftables configuration: /etc/nftables.conf -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/etc/nftables.conf
+[2025-11-14 10:26:05] DEBUG    [DRY RUN] Would copy file: /etc/nftables.conf -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/etc/nftables.conf
+[2025-11-14 10:26:05] DEBUG    Collecting directory logrotate configuration: /etc/logrotate.d -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/etc/logrotate.d
+[2025-11-14 10:26:05] DEBUG    [DRY RUN] Would copy directory: /etc/logrotate.d -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/etc/logrotate.d
+[2025-11-14 10:26:05] DEBUG    System directories collected
+[2025-11-14 10:26:05] DEBUG    System directories collection completed
+[2025-11-14 10:26:05] DEBUG    Collecting system command outputs and runtime state
+[2025-11-14 10:26:05] DEBUG    [DRY RUN] Would create directory: /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/commands
+[2025-11-14 10:26:05] DEBUG    Collecting system command outputs into /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/commands
+[2025-11-14 10:26:05] DEBUG    [DRY RUN] Would create directory: /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/var/lib/proxmox-backup-info
+[2025-11-14 10:26:05] DEBUG    System info snapshots will be stored in /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/var/lib/proxmox-backup-info
+[2025-11-14 10:26:05] DEBUG    [DRY RUN] Would execute command: cat /etc/os-release > /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/commands/os_release.txt
+[2025-11-14 10:26:05] DEBUG    [DRY RUN] Would execute command: uname -a > /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/commands/uname.txt
+[2025-11-14 10:26:05] DEBUG    Collecting Hostname via command: hostname -f > /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/commands/hostname.txt
+[2025-11-14 10:26:05] DEBUG    [DRY RUN] Would execute command: hostname -f > /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/commands/hostname.txt
+[2025-11-14 10:26:05] DEBUG    [DRY RUN] Would execute command: ip addr show > /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/commands/ip_addr.txt
+[2025-11-14 10:26:05] DEBUG    [DRY RUN] Would execute command: ip route show > /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/commands/ip_route.txt
+[2025-11-14 10:26:05] DEBUG    [DRY RUN] Would execute command: ip -s link > /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/commands/ip_link.txt
+[2025-11-14 10:26:05] DEBUG    Collecting DNS configuration via command: cat /etc/resolv.conf > /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/commands/resolv_conf.txt
+[2025-11-14 10:26:05] DEBUG    [DRY RUN] Would execute command: cat /etc/resolv.conf > /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/commands/resolv_conf.txt
+[2025-11-14 10:26:05] DEBUG    [DRY RUN] Would execute command: df -h > /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/commands/df.txt
+[2025-11-14 10:26:05] DEBUG    Collecting Mounted filesystems via command: mount > /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/commands/mount.txt
+[2025-11-14 10:26:05] DEBUG    [DRY RUN] Would execute command: mount > /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/commands/mount.txt
+[2025-11-14 10:26:05] DEBUG    [DRY RUN] Would execute command: lsblk -f > /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/commands/lsblk.txt
+[2025-11-14 10:26:05] DEBUG    [DRY RUN] Would execute command: free -h > /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/commands/free.txt
+[2025-11-14 10:26:05] DEBUG    [DRY RUN] Would execute command: lscpu > /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/commands/lscpu.txt
+[2025-11-14 10:26:05] DEBUG    [DRY RUN] Would execute command: lspci -v > /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/commands/lspci.txt
+[2025-11-14 10:26:05] DEBUG    Collecting USB devices via command: lsusb > /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/commands/lsusb.txt
+[2025-11-14 10:26:05] DEBUG    [DRY RUN] Would execute command: lsusb > /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/commands/lsusb.txt
+[2025-11-14 10:26:05] DEBUG    [DRY RUN] Would execute command: systemctl list-units --type=service --all > /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/commands/systemctl_services.txt
+[2025-11-14 10:26:05] DEBUG    Collecting Systemd service files via command: systemctl list-unit-files --type=service > /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/commands/systemctl_service_files.txt
+[2025-11-14 10:26:05] DEBUG    [DRY RUN] Would execute command: systemctl list-unit-files --type=service > /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/commands/systemctl_service_files.txt
+[2025-11-14 10:26:05] DEBUG    [DRY RUN] Would create directory: /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/var/lib/proxmox-backup-info/packages
+[2025-11-14 10:26:05] DEBUG    [DRY RUN] Would execute command: dpkg -l > /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/commands/dpkg_list.txt
+[2025-11-14 10:26:05] DEBUG    Collecting APT policy via command: apt-cache policy > /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/commands/apt_policy.txt
+[2025-11-14 10:26:05] DEBUG    [DRY RUN] Would execute command: apt-cache policy > /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/commands/apt_policy.txt
+[2025-11-14 10:26:05] DEBUG    [DRY RUN] Would execute command: iptables-save > /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/commands/iptables.txt
+[2025-11-14 10:26:05] DEBUG    [DRY RUN] Would execute command: ip6tables-save > /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/commands/ip6tables.txt
+[2025-11-14 10:26:05] DEBUG    Collecting nftables rules via command: nft list ruleset > /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/commands/nftables.txt
+[2025-11-14 10:26:05] DEBUG    [DRY RUN] Would execute command: nft list ruleset > /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/commands/nftables.txt
+[2025-11-14 10:26:05] DEBUG    Collecting Loaded kernel modules via command: lsmod > /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/commands/lsmod.txt
+[2025-11-14 10:26:05] DEBUG    [DRY RUN] Would execute command: lsmod > /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/commands/lsmod.txt
+[2025-11-14 10:26:05] DEBUG    Collecting Sysctl values via command: sysctl -a > /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/commands/sysctl.txt
+[2025-11-14 10:26:05] DEBUG    [DRY RUN] Would execute command: sysctl -a > /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/commands/sysctl.txt
+[2025-11-14 10:26:05] DEBUG    [DRY RUN] Would create directory: /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/var/lib/proxmox-backup-info/zfs
+[2025-11-14 10:26:05] DEBUG    [DRY RUN] Would execute command: zpool status > /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/commands/zpool_status.txt
+[2025-11-14 10:26:05] DEBUG    [DRY RUN] Would execute command: zpool list > /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/commands/zpool_list.txt
+[2025-11-14 10:26:05] DEBUG    [DRY RUN] Would execute command: zfs list > /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/commands/zfs_list.txt
+[2025-11-14 10:26:05] DEBUG    [DRY RUN] Would execute command: zfs get all > /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/commands/zfs_get_all.txt
+[2025-11-14 10:26:05] DEBUG    Collecting LVM physical volumes via command: pvs > /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/commands/lvm_pvs.txt
+[2025-11-14 10:26:05] DEBUG    [DRY RUN] Would execute command: pvs > /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/commands/lvm_pvs.txt
+[2025-11-14 10:26:05] DEBUG    Collecting LVM volume groups via command: vgs > /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/commands/lvm_vgs.txt
+[2025-11-14 10:26:05] DEBUG    [DRY RUN] Would execute command: vgs > /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/commands/lvm_vgs.txt
+[2025-11-14 10:26:05] DEBUG    Collecting LVM logical volumes via command: lvs > /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/commands/lvm_lvs.txt
+[2025-11-14 10:26:05] DEBUG    [DRY RUN] Would execute command: lvs > /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/commands/lvm_lvs.txt
+[2025-11-14 10:26:05] DEBUG    System command output collection finished
+[2025-11-14 10:26:05] DEBUG    System command collection completed
+[2025-11-14 10:26:05] DEBUG    Collecting kernel information (uname/modules)
+[2025-11-14 10:26:05] DEBUG    Collecting kernel information into /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/commands
+[2025-11-14 10:26:05] DEBUG    Collecting Kernel command line via command: cat /proc/cmdline > /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/commands/kernel_cmdline.txt
+[2025-11-14 10:26:05] DEBUG    [DRY RUN] Would execute command: cat /proc/cmdline > /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/commands/kernel_cmdline.txt
+[2025-11-14 10:26:05] DEBUG    Collecting Kernel version details via command: cat /proc/version > /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/commands/kernel_version.txt
+[2025-11-14 10:26:05] DEBUG    [DRY RUN] Would execute command: cat /proc/version > /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/commands/kernel_version.txt
+[2025-11-14 10:26:05] DEBUG    Kernel information snapshot completed
+[2025-11-14 10:26:05] DEBUG    Kernel information collected successfully
+[2025-11-14 10:26:05] DEBUG    Collecting hardware inventory (CPU/memory/devices)
+[2025-11-14 10:26:05] DEBUG    Collecting hardware inventory into /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/commands
+[2025-11-14 10:26:05] DEBUG    Collecting Hardware DMI information via command: dmidecode > /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/commands/dmidecode.txt
+[2025-11-14 10:26:05] DEBUG    [DRY RUN] Would execute command: dmidecode > /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/commands/dmidecode.txt
+[2025-11-14 10:26:05] DEBUG    Collecting SMART scan via command: smartctl --scan > /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/commands/smartctl_scan.txt
+[2025-11-14 10:26:05] DEBUG    [DRY RUN] Would execute command: smartctl --scan > /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/commands/smartctl_scan.txt
+[2025-11-14 10:26:05] DEBUG    Hardware information snapshot completed
+[2025-11-14 10:26:05] DEBUG    Hardware inventory collected successfully
+[2025-11-14 10:26:05] DEBUG    Collecting critical files specified in configuration
+[2025-11-14 10:26:05] DEBUG    Collecting critical files (passwd/shadow/fstab/etc.)
+[2025-11-14 10:26:05] DEBUG    Collecting critical file fstab: /etc/fstab -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/etc/fstab
+[2025-11-14 10:26:05] DEBUG    [DRY RUN] Would copy file: /etc/fstab -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/etc/fstab
+[2025-11-14 10:26:05] DEBUG    Collecting critical file passwd: /etc/passwd -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/etc/passwd
+[2025-11-14 10:26:05] DEBUG    [DRY RUN] Would copy file: /etc/passwd -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/etc/passwd
+[2025-11-14 10:26:05] DEBUG    Collecting critical file group: /etc/group -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/etc/group
+[2025-11-14 10:26:05] DEBUG    [DRY RUN] Would copy file: /etc/group -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/etc/group
+[2025-11-14 10:26:05] DEBUG    Collecting critical file shadow: /etc/shadow -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/etc/shadow
+[2025-11-14 10:26:05] DEBUG    [DRY RUN] Would copy file: /etc/shadow -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/etc/shadow
+[2025-11-14 10:26:05] DEBUG    Collecting critical file gshadow: /etc/gshadow -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/etc/gshadow
+[2025-11-14 10:26:05] DEBUG    [DRY RUN] Would copy file: /etc/gshadow -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/etc/gshadow
+[2025-11-14 10:26:05] DEBUG    Collecting critical file sudoers: /etc/sudoers -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/etc/sudoers
+[2025-11-14 10:26:05] DEBUG    critical file sudoers not found: /etc/sudoers (skipping)
+[2025-11-14 10:26:05] DEBUG    Critical file collection completed
+[2025-11-14 10:26:05] DEBUG    Critical files collected successfully
+[2025-11-14 10:26:05] DEBUG    Collecting script directories (/usr/local/bin,/usr/local/sbin)
+[2025-11-14 10:26:05] DEBUG    Collecting system script directories
+[2025-11-14 10:26:05] DEBUG    Collecting directory scripts in /usr/local/bin: /usr/local/bin -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/usr/local/bin
+[2025-11-14 10:26:05] DEBUG    [DRY RUN] Would copy directory: /usr/local/bin -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/usr/local/bin
+[2025-11-14 10:26:05] DEBUG    Collecting directory scripts in /usr/local/sbin: /usr/local/sbin -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/usr/local/sbin
+[2025-11-14 10:26:05] DEBUG    [DRY RUN] Would copy directory: /usr/local/sbin -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/usr/local/sbin
+[2025-11-14 10:26:06] DEBUG    System script directory collection completed
+[2025-11-14 10:26:06] DEBUG    Script directories collected successfully
+[2025-11-14 10:26:06] DEBUG    Collecting SSH keys for root and users
+[2025-11-14 10:26:06] DEBUG    Collecting SSH keys for host, root and users
+[2025-11-14 10:26:06] DEBUG    Collecting SSH host key: /etc/ssh/ssh_host_ecdsa_key.pub -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/etc/ssh/ssh_host_ecdsa_key.pub
+[2025-11-14 10:26:06] DEBUG    [DRY RUN] Would copy file: /etc/ssh/ssh_host_ecdsa_key.pub -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/etc/ssh/ssh_host_ecdsa_key.pub
+[2025-11-14 10:26:06] DEBUG    Collecting SSH host key: /etc/ssh/ssh_host_ed25519_key.pub -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/etc/ssh/ssh_host_ed25519_key.pub
+[2025-11-14 10:26:06] DEBUG    [DRY RUN] Would copy file: /etc/ssh/ssh_host_ed25519_key.pub -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/etc/ssh/ssh_host_ed25519_key.pub
+[2025-11-14 10:26:06] DEBUG    Collecting SSH host key: /etc/ssh/ssh_host_rsa_key.pub -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/etc/ssh/ssh_host_rsa_key.pub
+[2025-11-14 10:26:06] DEBUG    [DRY RUN] Would copy file: /etc/ssh/ssh_host_rsa_key.pub -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/etc/ssh/ssh_host_rsa_key.pub
+[2025-11-14 10:26:06] DEBUG    Collecting directory root SSH keys: /root/.ssh -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/root/.ssh
+[2025-11-14 10:26:06] DEBUG    [DRY RUN] Would copy directory: /root/.ssh -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/root/.ssh
+[2025-11-14 10:26:06] DEBUG    SSH key collection completed
+[2025-11-14 10:26:06] DEBUG    SSH keys collected successfully
+[2025-11-14 10:26:06] DEBUG    Collecting /root home directory
+[2025-11-14 10:26:06] DEBUG    Collecting /root profile files and histories
+[2025-11-14 10:26:06] DEBUG    [DRY RUN] Would create directory: /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/root
+[2025-11-14 10:26:06] DEBUG    Collecting root file .bashrc: /root/.bashrc -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/root/.bashrc
+[2025-11-14 10:26:06] DEBUG    [DRY RUN] Would copy file: /root/.bashrc -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/root/.bashrc
+[2025-11-14 10:26:06] DEBUG    Collecting root file .profile: /root/.profile -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/root/.profile
+[2025-11-14 10:26:06] DEBUG    [DRY RUN] Would copy file: /root/.profile -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/root/.profile
+[2025-11-14 10:26:06] DEBUG    Collecting root file .bash_logout: /root/.bash_logout -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/root/.bash_logout
+[2025-11-14 10:26:06] DEBUG    root file .bash_logout not found: /root/.bash_logout (skipping)
+[2025-11-14 10:26:06] DEBUG    Collecting root file .lesshst: /root/.lesshst -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/root/.lesshst
+[2025-11-14 10:26:06] DEBUG    [DRY RUN] Would copy file: /root/.lesshst -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/root/.lesshst
+[2025-11-14 10:26:06] DEBUG    Collecting root file .selected_editor: /root/.selected_editor -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/root/.selected_editor
+[2025-11-14 10:26:06] DEBUG    [DRY RUN] Would copy file: /root/.selected_editor -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/root/.selected_editor
+[2025-11-14 10:26:06] DEBUG    Collecting root file .forward: /root/.forward -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/root/.forward
+[2025-11-14 10:26:06] DEBUG    [DRY RUN] Would copy file: /root/.forward -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/root/.forward
+[2025-11-14 10:26:06] DEBUG    Collecting root file .wget-hsts: /root/.wget-hsts -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/root/.wget-hsts
+[2025-11-14 10:26:06] DEBUG    [DRY RUN] Would copy file: /root/.wget-hsts -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/root/.wget-hsts
+[2025-11-14 10:26:06] DEBUG    Collecting root file pkg-list.txt: /root/pkg-list.txt -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/root/pkg-list.txt
+[2025-11-14 10:26:06] DEBUG    [DRY RUN] Would copy file: /root/pkg-list.txt -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/root/pkg-list.txt
+[2025-11-14 10:26:06] DEBUG    Collecting root file test-cron.log: /root/test-cron.log -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/root/test-cron.log
+[2025-11-14 10:26:06] DEBUG    [DRY RUN] Would copy file: /root/test-cron.log -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/root/test-cron.log
+[2025-11-14 10:26:06] DEBUG    Collecting root history .bash_history: /root/.bash_history -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/root/.bash_history
+[2025-11-14 10:26:06] DEBUG    [DRY RUN] Would copy file: /root/.bash_history -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/root/.bash_history
+[2025-11-14 10:26:06] DEBUG    Collecting root history .bash_history-00727.tmp: /root/.bash_history-00727.tmp -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/root/.bash_history-00727.tmp
+[2025-11-14 10:26:06] DEBUG    [DRY RUN] Would copy file: /root/.bash_history-00727.tmp -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/root/.bash_history-00727.tmp
+[2025-11-14 10:26:06] DEBUG    Collecting root history .bash_history-00785.tmp: /root/.bash_history-00785.tmp -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/root/.bash_history-00785.tmp
+[2025-11-14 10:26:06] DEBUG    [DRY RUN] Would copy file: /root/.bash_history-00785.tmp -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/root/.bash_history-00785.tmp
+[2025-11-14 10:26:06] DEBUG    Collecting root history .bash_history-01392.tmp: /root/.bash_history-01392.tmp -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/root/.bash_history-01392.tmp
+[2025-11-14 10:26:06] DEBUG    [DRY RUN] Would copy file: /root/.bash_history-01392.tmp -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/root/.bash_history-01392.tmp
+[2025-11-14 10:26:06] DEBUG    Collecting root history .bash_history-20525.tmp: /root/.bash_history-20525.tmp -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/root/.bash_history-20525.tmp
+[2025-11-14 10:26:06] DEBUG    [DRY RUN] Would copy file: /root/.bash_history-20525.tmp -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/root/.bash_history-20525.tmp
+[2025-11-14 10:26:06] DEBUG    Collecting root history .bash_history-40255.tmp: /root/.bash_history-40255.tmp -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/root/.bash_history-40255.tmp
+[2025-11-14 10:26:06] DEBUG    [DRY RUN] Would copy file: /root/.bash_history-40255.tmp -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/root/.bash_history-40255.tmp
+[2025-11-14 10:26:06] DEBUG    Collecting directory root SSH directory: /root/.ssh -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/root/.ssh
+[2025-11-14 10:26:06] DEBUG    [DRY RUN] Would copy directory: /root/.ssh -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/root/.ssh
+[2025-11-14 10:26:06] DEBUG    Collecting directory wrangler logs: /root/.config/.wrangler/logs -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/root/.config/.wrangler/logs
+[2025-11-14 10:26:06] DEBUG    [DRY RUN] Would copy directory: /root/.config/.wrangler/logs -> /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396/root/.config/.wrangler/logs
+[2025-11-14 10:26:06] DEBUG    Root home collection completed
+[2025-11-14 10:26:06] DEBUG    Root home directory collected successfully
+[2025-11-14 10:26:06] DEBUG    Collecting user home directories under /home
+[2025-11-14 10:26:06] DEBUG    Collecting home directories under /home
+[2025-11-14 10:26:06] DEBUG    User home collection completed
+[2025-11-14 10:26:06] DEBUG    User home directories collected successfully
+[2025-11-14 10:26:06] INFO     System information collection completed
+[2025-11-14 10:26:06] DEBUG    Baseline system information collected successfully
+[2025-11-14 10:26:06] DEBUG    Collection completed: 39 files, 1 failed, 0 dirs created
+[2025-11-14 10:26:06] INFO     Collection completed: 39 files (0 B), 1 failed, 0 dirs created
+[2025-11-14 10:26:06] INFO     Running backup optimizations on collected data...
+[2025-11-14 10:26:06] INFO     Running backup optimizations (chunking=true dedup=true prefilter=true)
+[2025-11-14 10:26:06] DEBUG    Starting deduplication stage
+[2025-11-14 10:26:06] DEBUG    Scanning files for deduplication
+[2025-11-14 10:26:06] INFO     Deduplication completed: 0 duplicates replaced
+[2025-11-14 10:26:06] DEBUG    Deduplication stage completed
+[2025-11-14 10:26:06] DEBUG    Starting prefilter stage (max file size 8388608 bytes)
+[2025-11-14 10:26:06] DEBUG    Prefiltering files under /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396 (max size 8388608 bytes)
+[2025-11-14 10:26:06] INFO     Prefilter completed: 1 files optimized
+[2025-11-14 10:26:06] DEBUG    Prefilter stage completed
+[2025-11-14 10:26:06] DEBUG    Starting chunking stage (chunk size 10485760 bytes threshold 52428800 bytes)
+[2025-11-14 10:26:06] DEBUG    Scanning /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396 for files >= 52428800 bytes to chunk (chunk size 10485760)
+[2025-11-14 10:26:06] INFO     Chunking completed: 0 large files processed
+[2025-11-14 10:26:06] DEBUG    Chunking stage completed
+[2025-11-14 10:26:06] INFO     Step 3/8: [34mCreation of compressed archive[0m
+[2025-11-14 10:26:06] INFO     Creating compressed archive...
+[2025-11-14 10:26:06] DEBUG    Archiver configuration: type=xz level=9 mode=ultra threads=0
+[2025-11-14 10:26:06] DEBUG    Resolving compression (requested=xz level=9 mode=ultra)
+[2025-11-14 10:26:06] DEBUG    Compression resolved to xz (level 9, threads 0)
+[2025-11-14 10:26:06] DEBUG    Resolving compression (requested=xz level=9 mode=ultra)
+[2025-11-14 10:26:06] DEBUG    Compression resolved to xz (level 9, threads 0)
+[2025-11-14 10:26:06] INFO     Creating compressed archive with xz (level 9, mode ultra, threads auto)
+[2025-11-14 10:26:06] DEBUG    Creating archive: /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396 -> /opt/proxmox-backup-go/backup-test/pbs1.tis24.it-backup-20251114-102603.tar.xz.age (compression: xz)
+[2025-11-14 10:26:06] INFO     [DRY RUN] Would create archive: /opt/proxmox-backup-go/backup-test/pbs1.tis24.it-backup-20251114-102603.tar.xz.age
+[2025-11-14 10:26:06] INFO     Step 4/8: [34mVerification skipped (dry run mode)[0m
+[2025-11-14 10:26:06] INFO     [DRY RUN] Would create archive: /opt/proxmox-backup-go/backup-test/pbs1.tis24.it-backup-20251114-102603.tar.xz.age
+[2025-11-14 10:26:06] DEBUG    Parsing log file for error/warning counts: /opt/proxmox-backup-go/log-test/backup-pbs1.tis24.it-20251114-102603.log
+[2025-11-14 10:26:06] INFO     Step 6/8: [34mStorage dispatch skipped (dry run mode)[0m
+[2025-11-14 10:26:06] DEBUG    Go backup completed in 2.6s
+[2025-11-14 10:26:06] INFO     Temporary workspace preserved at /tmp/proxmox-backup-pbs1.tis24.it-20251114-102603-504169396 (will be removed at the next startup)
+[2025-11-14 10:26:06] INFO     [DRY RUN] Would write stats report: /opt/proxmox-backup-go/log-test/backup-stats-20251114-102603.json
+[2025-11-14 10:26:06] INFO     ✓ Statistics report saved to /opt/proxmox-backup-go/log-test/backup-stats-20251114-102603.json
+[2025-11-14 10:26:06] INFO     === Backup Statistics ===
+[2025-11-14 10:26:06] INFO     Files collected: 39
+[2025-11-14 10:26:06] WARNING  Files failed: 1
+[2025-11-14 10:26:06] INFO     Directories created: 0
+[2025-11-14 10:26:06] INFO     Data collected: 0 B
+[2025-11-14 10:26:06] INFO     Archive size: 0 B
+[2025-11-14 10:26:06] INFO     Compression ratio: N/A
+[2025-11-14 10:26:06] INFO     Compression used: xz (level 9, mode ultra)
+[2025-11-14 10:26:06] INFO     Duration: 2.6s
+[2025-11-14 10:26:06] INFO     Archive path: /opt/proxmox-backup-go/backup-test/pbs1.tis24.it-backup-20251114-102603.tar.xz.age
+[2025-11-14 10:26:06] INFO     ✓ Go backup orchestration completed
+[2025-11-14 10:26:06] INFO     Server ID: 1173879437561689
+[2025-11-14 10:26:06] INFO     Server MAC Address: bc:24:11:41:0d:18
+[2025-11-14 10:26:06] INFO     [DRY RUN] Would release lock file: /opt/proxmox-backup-go/lock/.backup.lock

@@ -8,12 +8,14 @@ import (
 	"hash/fnv"
 	"io"
 	"io/fs"
+	"math/rand"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/tis24dev/proxmox-backup/internal/logging"
@@ -38,13 +40,15 @@ type FileSummary struct {
 
 // Collector handles backup data collection
 type Collector struct {
-	logger   *logging.Logger
-	config   *CollectorConfig
-	stats    *CollectionStats
-	statsMu  sync.Mutex
-	tempDir  string
-	proxType types.ProxmoxType
-	dryRun   bool
+	logger     *logging.Logger
+	config     *CollectorConfig
+	stats      *CollectionStats
+	statsMu    sync.Mutex
+	tempDir    string
+	proxType   types.ProxmoxType
+	dryRun     bool
+	rootsMu    sync.RWMutex
+	rootsCache map[string][]string
 }
 
 func (c *Collector) incFilesProcessed() {
@@ -116,11 +120,16 @@ type CollectorConfig struct {
 	BackupScriptRepository  bool
 	BackupUserHomes         bool
 
-	// PXAR scanning concurrency
+	// PXAR scanning tuning
 	PxarDatastoreConcurrency int
 	PxarIntraConcurrency     int
 	PxarScanFanoutLevel      int
 	PxarScanMaxRoots         int
+	PxarStopOnCap            bool
+	PxarEnumWorkers          int
+	PxarEnumBudgetMs         int
+	PxarFileIncludePatterns  []string
+	PxarFileExcludePatterns  []string
 
 	// Exclude patterns (glob patterns to skip)
 	ExcludePatterns []string
@@ -128,8 +137,13 @@ type CollectorConfig struct {
 	CustomBackupPaths []string
 	BackupBlacklist   []string
 
-	// Script repository base path (usually BASE_DIR)
+	// Paths and overrides
 	ScriptRepositoryPath string
+	PVEConfigPath        string
+	PVEClusterPath       string
+	CorosyncConfigPath   string
+	VzdumpConfigPath     string
+	PBSDatastorePaths    []string
 
 	// PBS Authentication (auto-detected)
 	PBSRepository  string
@@ -187,6 +201,12 @@ func (c *CollectorConfig) Validate() error {
 	if c.PxarScanMaxRoots <= 0 {
 		c.PxarScanMaxRoots = 2048
 	}
+	if c.PxarEnumWorkers <= 0 {
+		c.PxarEnumWorkers = 4
+	}
+	if c.PxarEnumBudgetMs < 0 {
+		c.PxarEnumBudgetMs = 0
+	}
 
 	return nil
 }
@@ -194,12 +214,13 @@ func (c *CollectorConfig) Validate() error {
 // NewCollector creates a new backup collector
 func NewCollector(logger *logging.Logger, config *CollectorConfig, tempDir string, proxType types.ProxmoxType, dryRun bool) *Collector {
 	return &Collector{
-		logger:   logger,
-		config:   config,
-		stats:    &CollectionStats{},
-		tempDir:  tempDir,
-		proxType: proxType,
-		dryRun:   dryRun,
+		logger:     logger,
+		config:     config,
+		stats:      &CollectionStats{},
+		tempDir:    tempDir,
+		proxType:   proxType,
+		dryRun:     dryRun,
+		rootsCache: make(map[string][]string),
 	}
 }
 
@@ -250,10 +271,19 @@ func GetDefaultCollectorConfig() *CollectorConfig {
 		PxarIntraConcurrency:     4,
 		PxarScanFanoutLevel:      2,
 		PxarScanMaxRoots:         2048,
+		PxarEnumWorkers:          4,
+		PxarEnumBudgetMs:         0,
+		PxarFileIncludePatterns:  nil,
+		PxarFileExcludePatterns:  nil,
 
 		ExcludePatterns:   append([]string(nil), defaultExcludePatterns...),
 		CustomBackupPaths: []string{},
 		BackupBlacklist:   []string{},
+		PVEConfigPath:     "/etc/pve",
+		PVEClusterPath:    "/var/lib/pve-cluster",
+		CorosyncConfigPath: "/etc/pve/corosync.conf",
+		VzdumpConfigPath:  "/etc/vzdump.conf",
+		PBSDatastorePaths: []string{},
 	}
 }
 
@@ -1248,7 +1278,7 @@ func (c *Collector) sampleDirectories(ctx context.Context, root string, maxDepth
 	return results, nil
 }
 
-func (c *Collector) sampleFiles(ctx context.Context, root string, patterns []string, maxDepth, limit int) ([]FileSummary, error) {
+func (c *Collector) sampleFiles(ctx context.Context, root string, includePatterns, excludePatterns []string, maxDepth, limit int) ([]FileSummary, error) {
 	results := make([]FileSummary, 0, limit)
 	if limit <= 0 {
 		return results, nil
@@ -1335,7 +1365,10 @@ func (c *Collector) sampleFiles(ctx context.Context, root string, patterns []str
 		}
 		logProgress()
 
-		if len(patterns) > 0 && !matchAnyPattern(patterns, filepath.Base(path), rel) {
+		if len(excludePatterns) > 0 && matchAnyPattern(excludePatterns, filepath.Base(path), rel) {
+			return nil
+		}
+		if len(includePatterns) > 0 && !matchAnyPattern(includePatterns, filepath.Base(path), rel) {
 			return nil
 		}
 		incMatched()
@@ -1479,6 +1512,16 @@ func (c *Collector) sampleFiles(ctx context.Context, root string, patterns []str
 }
 
 func (c *Collector) computePxarWorkerRoots(ctx context.Context, root, purpose string) ([]string, error) {
+	cacheKey := fmt.Sprintf("%s|fanout=%d|max=%d", root, c.config.PxarScanFanoutLevel, c.config.PxarScanMaxRoots)
+	c.rootsMu.RLock()
+	if cached, ok := c.rootsCache[cacheKey]; ok && len(cached) > 0 {
+		result := append([]string(nil), cached...)
+		c.rootsMu.RUnlock()
+		c.logger.Debug("PXAR worker roots cache hit (%s): root=%s count=%d", purpose, root, len(result))
+		return result, nil
+	}
+	c.rootsMu.RUnlock()
+
 	fanout := c.config.PxarScanFanoutLevel
 	if fanout < 1 {
 		fanout = 1
@@ -1487,49 +1530,209 @@ func (c *Collector) computePxarWorkerRoots(ctx context.Context, root, purpose st
 	if maxRoots <= 0 {
 		maxRoots = 2048
 	}
+	enumWorkers := c.config.PxarEnumWorkers
+	if enumWorkers <= 0 {
+		enumWorkers = 1
+	}
+	budgetMs := c.config.PxarEnumBudgetMs
+
+	baseCtx, baseCancel := context.WithCancel(ctx)
+	defer baseCancel()
+	ctxFanout := baseCtx
+	if budgetMs > 0 {
+		ctxBudget, cancel := context.WithTimeout(baseCtx, time.Duration(budgetMs)*time.Millisecond)
+		ctxFanout = ctxBudget
+		defer cancel()
+	}
+
 	start := time.Now()
-	c.logger.Debug("PXAR fanout enumeration (%s): root=%s fanout=%d max_roots=%d", purpose, root, fanout, maxRoots)
+	c.logger.Debug("PXAR fanout enumeration (%s): root=%s fanout=%d max_roots=%d workers=%d budget_ms=%d",
+		purpose, root, fanout, maxRoots, enumWorkers, budgetMs)
 
 	levels := make(map[int][]string, fanout)
 	selector := newPxarRootSelector(maxRoots)
+	var selectorMu sync.Mutex
 	queue := []string{root}
-	foundAny := false
+	var foundAny atomic.Bool
+	stopOnCap := c.config.PxarStopOnCap
 
+	const (
+		pxarStopReasonNone int32 = iota
+		pxarStopReasonCap
+		pxarStopReasonBudget
+	)
+	var stopReason atomic.Int32
+
+	var progressVisited atomic.Int64
+	var progressScanned atomic.Int64
+	var progressExcluded atomic.Int64
+	var progressLeaves atomic.Int64
+	var progressReadErr atomic.Int64
+	var progressDepth atomic.Int64
+	var progressCandidates atomic.Int64
+	var progressCapped atomic.Bool
+
+	var progressStop chan struct{}
+	if c.logger.GetLevel() >= types.LogLevelDebug {
+		progressStop = make(chan struct{})
+		ticker := time.NewTicker(5 * time.Second)
+		go func() {
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ticker.C:
+					c.logger.Debug("PXAR progress (%s): depth=%d visited=%d scanned=%d excluded=%d leaves=%d candidates=%d capped=%v elapsed=%s",
+						purpose,
+						progressDepth.Load(),
+						progressVisited.Load(),
+						progressScanned.Load(),
+						progressExcluded.Load(),
+						progressLeaves.Load(),
+						progressCandidates.Load(),
+						progressCapped.Load(),
+						time.Since(start).Truncate(time.Millisecond))
+				case <-progressStop:
+					return
+				case <-ctxFanout.Done():
+					return
+				}
+			}
+		}()
+		defer close(progressStop)
+	}
+
+fanoutLoop:
 	for depth := 0; depth < fanout; depth++ {
 		if len(queue) == 0 {
 			break
 		}
+		if err := ctxFanout.Err(); err != nil {
+			break
+		}
+
+		progressDepth.Store(int64(depth + 1))
 		next := make([]string, 0, len(queue))
-		for _, base := range queue {
-			if err := ctx.Err(); err != nil {
-				return nil, err
-			}
-			entries, err := os.ReadDir(base)
-			if err != nil {
-				continue
-			}
-			for _, entry := range entries {
-				if !entry.IsDir() {
-					continue
+		var nextMu sync.Mutex
+
+		jobCh := make(chan string)
+		var wg sync.WaitGroup
+
+		workerCount := enumWorkers
+		if workerCount > len(queue) {
+			workerCount = len(queue)
+		}
+		if workerCount < 1 {
+			workerCount = 1
+		}
+
+		shuffledBases := append([]string(nil), queue...)
+		shuffleStringsDeterministic(shuffledBases, deterministicSeed(root, purpose, fmt.Sprintf("depth-%d", depth)))
+
+		for w := 0; w < workerCount; w++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for basePath := range jobCh {
+					if err := ctxFanout.Err(); err != nil {
+						return
+					}
+
+					progressVisited.Add(1)
+					entries, err := os.ReadDir(basePath)
+					if err != nil {
+						progressReadErr.Add(1)
+						continue
+					}
+					progressScanned.Add(int64(len(entries)))
+					shuffleDirEntriesDeterministic(entries, deterministicSeed(basePath, purpose, fmt.Sprintf("depth-%d", depth)))
+
+					for _, entry := range entries {
+						if err := ctxFanout.Err(); err != nil {
+							return
+						}
+
+						if !entry.IsDir() {
+							continue
+						}
+						child := filepath.Join(basePath, entry.Name())
+						if c.shouldExclude(child) {
+							progressExcluded.Add(1)
+							continue
+						}
+						foundAny.Store(true)
+
+						level := depth + 1
+						if level < fanout {
+							nextMu.Lock()
+							levels[level] = append(levels[level], child)
+							next = append(next, child)
+							nextMu.Unlock()
+							continue
+						}
+
+						selectorMu.Lock()
+						prevCapped := selector.capped
+						selector.consider(child)
+						progressLeaves.Add(1)
+						progressCandidates.Store(int64(selector.total))
+						currentCapped := selector.capped
+						selectorMu.Unlock()
+
+						if !prevCapped && currentCapped {
+							progressCapped.Store(true)
+							c.logger.Debug("PXAR progress (%s): candidate cap reached (limit=%d) at total=%d",
+								purpose, maxRoots, selector.total)
+							if stopOnCap {
+								if stopReason.CompareAndSwap(pxarStopReasonNone, pxarStopReasonCap) {
+									c.logger.Debug("PXAR early termination (%s): stop_on_cap=true limit=%d candidates=%d depth=%d elapsed=%s",
+										purpose,
+										maxRoots,
+										selector.total,
+										depth+1,
+										time.Since(start).Truncate(time.Millisecond))
+								}
+								baseCancel()
+								return
+							}
+						}
+					}
 				}
-				child := filepath.Join(base, entry.Name())
-				if c.shouldExclude(child) {
-					continue
-				}
-				foundAny = true
-				level := depth + 1
-				if level < fanout {
-					levels[level] = append(levels[level], child)
-					next = append(next, child)
-					continue
-				}
-				selector.consider(child)
+			}()
+		}
+
+		for _, base := range shuffledBases {
+			select {
+			case <-ctxFanout.Done():
+				break fanoutLoop
+			default:
+				jobCh <- base
 			}
 		}
+		close(jobCh)
+		wg.Wait()
+
+		if err := ctxFanout.Err(); err != nil {
+			break
+		}
+
+		c.logger.Debug("PXAR depth %d/%d done: bases=%d next_bases=%d leaves=%d excluded=%d readErrs=%d elapsed=%s",
+			depth+1,
+			fanout,
+			len(queue),
+			len(next),
+			progressLeaves.Load(),
+			progressExcluded.Load(),
+			progressReadErr.Load(),
+			time.Since(start).Truncate(time.Millisecond))
 		queue = next
 	}
 
-	if !foundAny {
+	if budgetMs > 0 && errors.Is(ctxFanout.Err(), context.DeadlineExceeded) {
+		stopReason.CompareAndSwap(pxarStopReasonNone, pxarStopReasonBudget)
+		c.logger.Debug("PXAR early termination (%s): enumeration budget exceeded (%dms)", purpose, budgetMs)
+	}
+
+	if !foundAny.Load() {
 		return nil, nil
 	}
 
@@ -1539,9 +1742,11 @@ func (c *Collector) computePxarWorkerRoots(ctx context.Context, root, purpose st
 	if len(roots) == 0 {
 		for level := fanout - 1; level >= 1; level-- {
 			if dirs := levels[level]; len(dirs) > 0 {
+				c.logger.Debug("PXAR fallback to level=%d: dirs=%d (limit=%d)", level, len(dirs), maxRoots)
 				roots = uniquePaths(dirs)
 				totalCandidates = len(dirs)
 				if maxRoots > 0 && len(roots) > maxRoots {
+					c.logger.Debug("PXAR downsample: from=%d to=%d", len(roots), maxRoots)
 					roots = downsampleRoots(roots, maxRoots)
 					capped = true
 				}
@@ -1562,6 +1767,9 @@ func (c *Collector) computePxarWorkerRoots(ctx context.Context, root, purpose st
 		totalCandidates,
 		capped,
 		time.Since(start).Truncate(time.Millisecond))
+	c.rootsMu.Lock()
+	c.rootsCache[cacheKey] = append([]string(nil), roots...)
+	c.rootsMu.Unlock()
 	return roots, nil
 }
 
@@ -1586,6 +1794,37 @@ func downsampleRoots(roots []string, limit int) []string {
 		result = result[:limit]
 	}
 	return result
+}
+
+func shuffleStringsDeterministic(items []string, seed int64) {
+	if len(items) <= 1 {
+		return
+	}
+	r := rand.New(rand.NewSource(seed))
+	for i := len(items) - 1; i > 0; i-- {
+		j := r.Intn(i + 1)
+		items[i], items[j] = items[j], items[i]
+	}
+}
+
+func shuffleDirEntriesDeterministic(entries []fs.DirEntry, seed int64) {
+	if len(entries) <= 1 {
+		return
+	}
+	r := rand.New(rand.NewSource(seed))
+	for i := len(entries) - 1; i > 0; i-- {
+		j := r.Intn(i + 1)
+		entries[i], entries[j] = entries[j], entries[i]
+	}
+}
+
+func deterministicSeed(parts ...string) int64 {
+	hasher := fnv.New64a()
+	for _, p := range parts {
+		_, _ = hasher.Write([]byte(p))
+		_, _ = hasher.Write([]byte{0})
+	}
+	return int64(hasher.Sum64())
 }
 
 type pxarRootCandidate struct {

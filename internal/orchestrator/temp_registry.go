@@ -91,9 +91,11 @@ func (r *TempDirRegistry) Deregister(dir string) error {
 }
 
 // CleanupOrphaned removes entries whose processes are gone or directories are too old.
-func (r *TempDirRegistry) CleanupOrphaned(maxAge time.Duration) error {
+// Returns the number of directories successfully removed.
+func (r *TempDirRegistry) CleanupOrphaned(maxAge time.Duration) (int, error) {
 	now := time.Now().UTC()
-	return r.withLock(func(entries []tempDirRecord) ([]tempDirRecord, error) {
+	cleanedCount := 0
+	err := r.withLock(func(entries []tempDirRecord) ([]tempDirRecord, error) {
 		updated := make([]tempDirRecord, 0, len(entries))
 		for _, entry := range entries {
 			stale := now.Sub(entry.CreatedAt) > maxAge
@@ -112,8 +114,8 @@ func (r *TempDirRegistry) CleanupOrphaned(maxAge time.Duration) error {
 				}
 				if r.logger != nil {
 					r.logger.Debug("Cleaned orphaned temp dir %s (pid=%d)", entry.Path, entry.PID)
-					r.logger.Info("Cleaned orphaned temp dir")
 				}
+				cleanedCount++
 				continue
 			}
 
@@ -121,6 +123,7 @@ func (r *TempDirRegistry) CleanupOrphaned(maxAge time.Duration) error {
 		}
 		return updated, nil
 	})
+	return cleanedCount, err
 }
 
 func (r *TempDirRegistry) updateEntries(mutator func([]tempDirRecord) ([]tempDirRecord, error)) error {

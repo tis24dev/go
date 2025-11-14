@@ -19,6 +19,7 @@ type Args struct {
 	ForceNewKey      bool
 	Decrypt          bool
 	Restore          bool
+	Install          bool
 }
 
 // Parse parses command-line arguments and returns Args struct
@@ -62,6 +63,8 @@ func Parse() *Args {
 		"Run the interactive decrypt workflow (converts encrypted bundles into plaintext bundles)")
 	flag.BoolVar(&args.Restore, "restore", false,
 		"Run the interactive restore workflow (select bundle, optionally decrypt, apply to system)")
+	flag.BoolVar(&args.Install, "install", false,
+		"Run the interactive installer (generate/configure backup.env)")
 
 	// Custom usage message
 	flag.Usage = func() {

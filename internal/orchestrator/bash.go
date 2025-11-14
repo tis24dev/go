@@ -301,10 +301,12 @@ type Orchestrator struct {
 	// Identity
 	serverID  string
 	serverMAC string
+
+	startTime time.Time
 }
 
 const tempDirCleanupAge = 24 * time.Hour
-const backupTotalSteps = 7
+const backupTotalSteps = 8
 
 // New creates a new Orchestrator
 func New(logger *logging.Logger, scriptPath string, dryRun bool) *Orchestrator {
@@ -340,6 +342,11 @@ func (o *Orchestrator) SetForceNewAgeRecipient(force bool) {
 
 func (o *Orchestrator) SetProxmoxVersion(version string) {
 	o.proxmoxVersion = strings.TrimSpace(version)
+}
+
+// SetStartTime injects the timestamp to reuse across logs/backups.
+func (o *Orchestrator) SetStartTime(t time.Time) {
+	o.startTime = t
 }
 
 // RunBackup coordinates the full backup process
@@ -500,15 +507,14 @@ func (o *Orchestrator) ensureTempRegistry() *TempDirRegistry {
 func (o *Orchestrator) RunGoBackup(ctx context.Context, pType types.ProxmoxType, hostname string) (*BackupStats, error) {
 	o.logger.Info("Starting Go-based backup orchestration for %s", pType)
 
-	registry := o.ensureTempRegistry()
-	if registry != nil {
-		o.logger.Debug("Checking for orphaned temp directories older than %s", tempDirCleanupAge)
-		if err := registry.CleanupOrphaned(tempDirCleanupAge); err != nil {
-			o.logger.Debug("Temp dir cleanup skipped: %v", err)
-		}
-	}
+	// Unified cleanup of previous execution artifacts
+	registry := o.cleanupPreviousExecutionArtifacts()
 
-	startTime := time.Now()
+	startTime := o.startTime
+	if startTime.IsZero() {
+		startTime = time.Now()
+		o.startTime = startTime
+	}
 	normalizedLevel := normalizeCompressionLevel(o.compressionType, o.compressionLevel)
 
 	fmt.Println()
@@ -1142,6 +1148,86 @@ func (o *Orchestrator) SaveStatsReport(stats *BackupStats) error {
 	return nil
 }
 
+// cleanupPreviousExecutionArtifacts performs unified cleanup of old JSON stats and orphaned temp directories
+// Returns the TempDirRegistry for use by the caller
+func (o *Orchestrator) cleanupPreviousExecutionArtifacts() *TempDirRegistry {
+	// Check if there's anything to clean
+	hasStatsFiles := false
+
+	// Check for JSON stats files
+	if o.logPath != "" {
+		pattern := filepath.Join(o.logPath, "backup-stats-*.json")
+		matches, err := filepath.Glob(pattern)
+		if err == nil && len(matches) > 0 {
+			hasStatsFiles = true
+		}
+	}
+
+	// Get temp directory registry
+	registry := o.ensureTempRegistry()
+
+	removedFiles := 0
+	failedFiles := 0
+	removedDirs := 0
+	cleanupStarted := false
+
+	// Phase 1: Cleanup JSON stats files
+	if hasStatsFiles {
+		pattern := filepath.Join(o.logPath, "backup-stats-*.json")
+		matches, _ := filepath.Glob(pattern)
+
+		if len(matches) > 0 {
+			if !cleanupStarted {
+				o.logger.Debug("Starting cleanup of previous execution files...")
+				cleanupStarted = true
+			}
+			o.logger.Debug("Found %d stats file(s) from previous execution", len(matches))
+
+			for _, file := range matches {
+				filename := filepath.Base(file)
+				if err := os.Remove(file); err != nil {
+					o.logger.Debug("Failed to remove file %s: %v", filename, err)
+					failedFiles++
+				} else {
+					o.logger.Debug("Cleanup file %s executed", filename)
+					removedFiles++
+				}
+			}
+		}
+	}
+
+	// Phase 2: Cleanup orphaned temp directories
+	if registry != nil {
+		if !cleanupStarted {
+			o.logger.Debug("Starting cleanup of previous execution files...")
+			cleanupStarted = true
+		}
+		o.logger.Debug("Checking for orphaned temp directories older than %s", tempDirCleanupAge)
+
+		// CleanupOrphaned now returns the count of directories removed
+		count, err := registry.CleanupOrphaned(tempDirCleanupAge)
+		if err != nil {
+			o.logger.Debug("Temp dir cleanup skipped: %v", err)
+		} else {
+			removedDirs = count
+		}
+	}
+
+	// Final summary - only show if cleanup was actually performed
+	if cleanupStarted {
+		if removedFiles > 0 || removedDirs > 0 {
+			totalRemoved := removedFiles + removedDirs
+			if failedFiles > 0 {
+				o.logger.Info("Cleanup of previous execution files completed with errors (%d item(s) removed: %d file(s), %d dir(s); %d failed)", totalRemoved, removedFiles, removedDirs, failedFiles)
+			} else {
+				o.logger.Info("Cleanup of previous execution files completed successfully (%d item(s) removed: %d file(s), %d dir(s))", totalRemoved, removedFiles, removedDirs)
+			}
+		}
+	}
+
+	return registry
+}
+
 func (o *Orchestrator) writeBackupMetadata(tempDir string, stats *BackupStats) error {
 	infoDir := filepath.Join(tempDir, "var/lib/proxmox-backup-info")
 	if err := os.MkdirAll(infoDir, 0755); err != nil {
@@ -1220,9 +1306,24 @@ func applyCollectorOverrides(cc *backup.CollectorConfig, cfg *config.Config) {
 	if cfg.PxarScanMaxRoots > 0 {
 		cc.PxarScanMaxRoots = cfg.PxarScanMaxRoots
 	}
+	cc.PxarStopOnCap = cfg.PxarStopOnCap
+	if cfg.PxarEnumWorkers > 0 {
+		cc.PxarEnumWorkers = cfg.PxarEnumWorkers
+	}
+	if cfg.PxarEnumBudgetMs >= 0 {
+		cc.PxarEnumBudgetMs = cfg.PxarEnumBudgetMs
+	}
+	cc.PxarFileIncludePatterns = append([]string(nil), cfg.PxarFileIncludePatterns...)
+	cc.PxarFileExcludePatterns = append([]string(nil), cfg.PxarFileExcludePatterns...)
 
 	cc.CustomBackupPaths = append([]string(nil), cfg.CustomBackupPaths...)
 	cc.BackupBlacklist = append([]string(nil), cfg.BackupBlacklist...)
+
+	cc.PVEConfigPath = cfg.PVEConfigPath
+	cc.PVEClusterPath = cfg.PVEClusterPath
+	cc.CorosyncConfigPath = cfg.CorosyncConfigPath
+	cc.VzdumpConfigPath = cfg.VzdumpConfigPath
+	cc.PBSDatastorePaths = append([]string(nil), cfg.PBSDatastorePaths...)
 
 	// Pass PBS authentication (auto-detected, zero user input)
 	cc.PBSRepository = cfg.PBSRepository

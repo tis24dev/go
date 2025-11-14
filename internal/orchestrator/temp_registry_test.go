@@ -85,8 +85,12 @@ func TestTempDirRegistryCleanupOrphaned(t *testing.T) {
 		t.Fatalf("save entries: %v", err)
 	}
 
-	if err := registry.CleanupOrphaned(time.Hour); err != nil {
+	cleaned, err := registry.CleanupOrphaned(time.Hour)
+	if err != nil {
 		t.Fatalf("cleanup orphaned: %v", err)
+	}
+	if cleaned != 1 {
+		t.Fatalf("expected 1 directory cleaned, got %d", cleaned)
 	}
 
 	if _, err := os.Stat(staleDir); !os.IsNotExist(err) {

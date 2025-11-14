@@ -1,0 +1,94 @@
+[2025-11-14 10:58:15] INFO     Log file opened: /opt/proxmox-backup-go/log/backup-pbs1.tis24.it-20251114-105815.log
+[2025-11-14 10:58:15] INFO     DRY RUN MODE: No actual changes will be made (enabled via DRY_RUN config)
+[2025-11-14 10:58:15] INFO     Environment: pbs 3.4.6
+[2025-11-14 10:58:15] INFO     Backup enabled: true
+[2025-11-14 10:58:15] INFO     Debug level: INFO
+[2025-11-14 10:58:15] INFO     Compression: xz (level 9, mode ultra)
+[2025-11-14 10:58:15] INFO     Base directory: /opt/proxmox-backup-go (auto-detected from executable path)
+[2025-11-14 10:58:15] INFO     Configuration file: ./configs/backup.env (default path)
+[2025-11-14 10:58:15] INFO     Server ID: 1173879437561689
+[2025-11-14 10:58:15] INFO     Server MAC Address: bc:24:11:41:0d:18
+[2025-11-14 10:58:15] INFO     Server Telegram: Telegram disabled
+[2025-11-14 10:58:15] INFO     Running security preflight checks...
+[2025-11-14 10:58:15] INFO     Checking dependencies...
+[2025-11-14 10:58:15] INFO     Dependencies check completed: all required dependencies available (optional missing: ceph)
+[2025-11-14 10:58:15] WARNING  Optional dependency ceph missing: Ceph configuration collection enabled
+[2025-11-14 10:58:15] INFO     Security checks completed: 1 warning(s), 0 error(s)
+[2025-11-14 10:58:15] INFO     Initializing backup orchestrator...
+[2025-11-14 10:58:15] INFO     ✓ Orchestrator initialized
+[2025-11-14 10:58:15] INFO     Verifying directory structure...
+[2025-11-14 10:58:15] INFO     ✓ Backup directory exists: /opt/proxmox-backup-go/backup
+[2025-11-14 10:58:15] INFO     ✓ Log directory exists: /opt/proxmox-backup-go/log
+[2025-11-14 10:58:15] INFO     ✓ Lock directory exists: /opt/proxmox-backup-go/lock
+[2025-11-14 10:58:15] INFO     Initializing storage backends...
+[2025-11-14 10:58:15] INFO     Path Primary: /opt/proxmox-backup-go/backup -> Filesystem: ext4 (supports ownership) [mount: /]
+[2025-11-14 10:58:15] INFO     ✓ Local storage initialized (present 0 backups, retention 15 backups)
+[2025-11-14 10:58:15] INFO     Path Secondary: disabled
+[2025-11-14 10:58:15] INFO     Path Cloud: disabled
+[2025-11-14 10:58:15] INFO     Initializing notification channels...
+[2025-11-14 10:58:15] INFO     Telegram notifications: disabled
+[2025-11-14 10:58:15] INFO     ✓ Email notifications initialized (method: relay)
+[2025-11-14 10:58:15] INFO     Webhook notifications: disabled
+[2025-11-14 10:58:15] INFO     Validating bash script environment...
+[2025-11-14 10:58:15] INFO     ✓ Bash scripts directory exists: /opt/proxmox-backup/script
+[2025-11-14 10:58:15] INFO     Storage configuration:
+[2025-11-14 10:58:15] INFO       Primary: /opt/proxmox-backup-go/backup [ext4]
+[2025-11-14 10:58:15] INFO       Secondary storage: disabled
+[2025-11-14 10:58:15] INFO       Cloud storage: disabled
+[2025-11-14 10:58:15] INFO     Log configuration:
+[2025-11-14 10:58:15] INFO       Primary: /opt/proxmox-backup-go/log
+[2025-11-14 10:58:15] INFO       Secondary: disabled
+[2025-11-14 10:58:15] INFO       Cloud: disabled
+[2025-11-14 10:58:15] INFO     Notification configuration:
+[2025-11-14 10:58:15] INFO       Telegram: false
+[2025-11-14 10:58:15] INFO       Email: true
+[2025-11-14 10:58:15] INFO       Metrics: false
+[2025-11-14 10:58:15] INFO     Running pre-backup validation checks...
+[2025-11-14 10:58:15] INFO     [DRY RUN] Would create lock file: /opt/proxmox-backup-go/lock/.backup.lock
+[2025-11-14 10:58:15] INFO     ✓ Directories: All required directories exist
+[2025-11-14 10:58:15] INFO     ✓ Disk Space: Sufficient disk space on all configured destinations
+[2025-11-14 10:58:15] INFO     ✓ Permissions: All directories are writable
+[2025-11-14 10:58:15] INFO     ✓ Lock File: Lock file acquired successfully
+[2025-11-14 10:58:15] INFO     All pre-backup checks passed
+[2025-11-14 10:58:15] INFO     Starting Go backup orchestration...
+[2025-11-14 10:58:15] INFO     Starting Go-based backup orchestration for pbs
+[2025-11-14 10:58:15] INFO     Cleanup of previous execution files completed successfully (1 item(s) removed: 0 file(s), 1 dir(s))
+[2025-11-14 10:58:15] INFO     Step 1/8: [34mInitializing backup statistics and temporary workspace[0m
+[2025-11-14 10:58:15] INFO     [DRY RUN] Temporary directory would be: /tmp/proxmox-backup-pbs1.tis24.it-20251114-105815-513841870
+[2025-11-14 10:58:15] INFO     Step 2/8: [34mCollection of configuration files and optimizations[0m
+[2025-11-14 10:58:15] INFO     Collecting configuration files...
+[2025-11-14 10:58:15] INFO     Starting backup collection for pbs
+[2025-11-14 10:58:15] INFO     Collecting PBS configurations
+[2025-11-14 10:58:15] INFO     PBS configuration collection completed
+[2025-11-14 10:58:15] INFO     Collecting system information
+[2025-11-14 10:58:15] INFO     System information collection completed
+[2025-11-14 10:58:15] INFO     Collection completed: 39 files (0 B), 1 failed, 0 dirs created
+[2025-11-14 10:58:15] INFO     Running backup optimizations on collected data...
+[2025-11-14 10:58:15] INFO     Running backup optimizations (chunking=true dedup=true prefilter=true)
+[2025-11-14 10:58:15] INFO     Deduplication completed: 0 duplicates replaced
+[2025-11-14 10:58:15] INFO     Prefilter completed: 1 files optimized
+[2025-11-14 10:58:15] INFO     Chunking completed: 0 large files processed
+[2025-11-14 10:58:15] INFO     Step 3/8: [34mCreation of compressed archive[0m
+[2025-11-14 10:58:15] INFO     Creating compressed archive...
+[2025-11-14 10:58:15] INFO     Creating compressed archive with xz (level 9, mode ultra, threads auto)
+[2025-11-14 10:58:15] INFO     [DRY RUN] Would create archive: /opt/proxmox-backup-go/backup/pbs1.tis24.it-backup-20251114-105815.tar.xz.age
+[2025-11-14 10:58:15] INFO     Step 4/8: [34mVerification skipped (dry run mode)[0m
+[2025-11-14 10:58:15] INFO     [DRY RUN] Would create archive: /opt/proxmox-backup-go/backup/pbs1.tis24.it-backup-20251114-105815.tar.xz.age
+[2025-11-14 10:58:15] INFO     Step 6/8: [34mStorage dispatch skipped (dry run mode)[0m
+[2025-11-14 10:58:15] INFO     Temporary workspace preserved at /tmp/proxmox-backup-pbs1.tis24.it-20251114-105815-513841870 (will be removed at the next startup)
+[2025-11-14 10:58:15] INFO     [DRY RUN] Would write stats report: /opt/proxmox-backup-go/log/backup-stats-20251114-105815.json
+[2025-11-14 10:58:15] INFO     ✓ Statistics report saved to /opt/proxmox-backup-go/log/backup-stats-20251114-105815.json
+[2025-11-14 10:58:15] INFO     === Backup Statistics ===
+[2025-11-14 10:58:15] INFO     Files collected: 39
+[2025-11-14 10:58:15] WARNING  Files failed: 1
+[2025-11-14 10:58:15] INFO     Directories created: 0
+[2025-11-14 10:58:15] INFO     Data collected: 0 B
+[2025-11-14 10:58:15] INFO     Archive size: 0 B
+[2025-11-14 10:58:15] INFO     Compression ratio: N/A
+[2025-11-14 10:58:15] INFO     Compression used: xz (level 9, mode ultra)
+[2025-11-14 10:58:15] INFO     Duration: 0.2s
+[2025-11-14 10:58:15] INFO     Archive path: /opt/proxmox-backup-go/backup/pbs1.tis24.it-backup-20251114-105815.tar.xz.age
+[2025-11-14 10:58:15] INFO     ✓ Go backup orchestration completed
+[2025-11-14 10:58:15] INFO     Server ID: 1173879437561689
+[2025-11-14 10:58:15] INFO     Server MAC Address: bc:24:11:41:0d:18
+[2025-11-14 10:58:15] INFO     [DRY RUN] Would release lock file: /opt/proxmox-backup-go/lock/.backup.lock

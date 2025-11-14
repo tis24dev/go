@@ -110,6 +110,68 @@ Start **Phase 1: Core Infrastructure**:
 
 ---
 
+## PXAR, Cloud e Override Percorsi (Go)
+
+### PXAR metadata / sampling
+- `PXAR_SCAN_ENABLE` abilita o disabilita completamente la raccolta dei metadata PXAR (default: `true`).
+- `PXAR_STOP_ON_CAP`, `PXAR_SCAN_MAX_ROOTS` e `PXAR_ENUM_READDIR_WORKERS` limitano la fan-out traversal per evitare di scandire milioni di entry quando bastano 2K campioni.
+- `PXAR_ENUM_BUDGET_MS` imposta un budget massimo (in millisecondi) per l'enumerazione: quando scade interrompe i worker e usa i candidati raccolti fin lì.
+- `PXAR_FILE_INCLUDE_PATTERN` / `PXAR_FILE_EXCLUDE_PATTERN` permettono di definire i pattern da includere o escludere (lista separata da spazi/virgole). Senza override la Go pipeline usa automaticamente `*.pxar`, `catalog.pxar*`, oltre ai preset per PVE (`*.vma`, `*.tar.*`, `*.log`, ecc.).
+
+### Override percorsi PVE/PBS
+- `PVE_CONFIG_PATH`, `PVE_CLUSTER_PATH`, `COROSYNC_CONFIG_PATH`, `VZDUMP_CONFIG_PATH` puntano ai path reali quando non coincidono con `/etc/pve`, `/var/lib/pve-cluster`, ecc. Il collector Go copia e struttura i file partendo sempre da questi override, quindi puoi lavorare anche su mirror montati altrove.
+- `PBS_DATASTORE_PATH` accetta più directory separate da virgola/spazio per forzare la scansione di datastore custom (oltre a quelli rilevati da `proxmox-backup-manager`).
+
+### Cloud upload avanzato
+- `CLOUD_REMOTE_PATH` aggiunge un prefisso deterministico all'interno del remote rclone (`remote:prefisso/...`), così puoi isolare i backup Go senza duplicare configurazioni.
+- `CLOUD_UPLOAD_MODE` (`sequential` | `parallel`) e `CLOUD_PARALLEL_MAX_JOBS` controllano il worker pool usato per bundle e file associati (`.sha256`, `.metadata`, ecc.).
+- `CLOUD_PARALLEL_VERIFICATION` abilita la verifica post-upload anche per i file paralleli (il file principale viene sempre verificato).
+- `CLOUD_LOG_PATH` è un riferimento rclone completo (`remote:/logs`). A differenza dei backup (che usano `CLOUD_REMOTE` + `CLOUD_REMOTE_PATH`), qui dichiari direttamente remote e cartella finale per i log.
+- Le variabili `MAX_*_BACKUPS` governano anche la rotazione dei log: con al massimo un backup al giorno, log e archivi rimangono sempre allineati.
+
+Tutti i flag qui sopra sono già presenti in `configs/backup.env` (Go) e possono convivere con il file `reference/env/backup.env` originale senza modificarlo.
+
+---
+
+## Log File Management
+
+The Go pipeline automatically manages log files with real-time writing and retention policies:
+
+### Log File Lifecycle
+1. **Creation**: Log file is opened at backup start with format `backup-<hostname>-<timestamp>.log`
+2. **Real-time Writing**: All log messages are written immediately to disk (O_SYNC flag) and to stdout simultaneously
+3. **Closure**: Log file is closed **after** notifications are sent (very late in the process)
+4. **Distribution**: After closure, log is copied to secondary and cloud storage (same destinations as backup files)
+5. **Rotation**: Old logs are automatically removed based on retention policies
+
+### Configuration Variables
+
+```bash
+# Log paths
+LOG_PATH=${BASE_DIR}/log    # Primary log directory
+SECONDARY_LOG_PATH=         # Secondary log directory (optional, leave empty if not used)
+CLOUD_LOG_PATH=             # Cloud log path (optional, leave empty if not used)
+
+# Retention policy (applied to BOTH backups and log files)
+MAX_LOCAL_BACKUPS=7         # Maximum number of backups/logs to keep locally
+MAX_SECONDARY_BACKUPS=14    # Maximum number of backups/logs on secondary storage
+MAX_CLOUD_BACKUPS=30        # Maximum number of backups/logs on cloud storage
+```
+
+### Log File Format
+- **Filename**: `backup-<hostname>-YYYYMMDD-HHMMSS.log`
+- **Content**: Plain text without ANSI color codes
+- **Encoding**: UTF-8
+- **Permissions**: 0600 (owner read/write only)
+
+### Benefits
+- **Crash Safety**: Real-time writing ensures logs are preserved even if the backup process crashes
+- **Complete Timeline**: Logs capture everything from initialization to notifications
+- **Multi-destination**: Same distribution strategy as backup files (primary, secondary, cloud)
+- **Automatic Cleanup**: Old logs are rotated automatically per location
+
+---
+
 ## Available Make Commands
 
 ```bash

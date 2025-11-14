@@ -30,11 +30,19 @@ func (c *Collector) CollectPVEConfigs(ctx context.Context) error {
 	c.logger.Info("Collecting PVE configurations")
 	c.logger.Debug("Validating PVE environment and cluster state prior to collection")
 
-	// Check if we're actually on PVE
-	if _, err := os.Stat("/etc/pve"); os.IsNotExist(err) {
-		return fmt.Errorf("not a PVE system: /etc/pve not found")
+	pveConfigPath := c.effectivePVEConfigPath()
+	if statErr := func() error {
+		if _, err := os.Stat(pveConfigPath); err != nil {
+			return err
+		}
+		return nil
+	}(); statErr != nil {
+		if errors.Is(statErr, os.ErrNotExist) {
+			return fmt.Errorf("not a PVE system: %s not found", pveConfigPath)
+		}
+		return fmt.Errorf("failed to access PVE config path %s: %w", pveConfigPath, statErr)
 	}
-	c.logger.Debug("/etc/pve detected, continuing with PVE collection")
+	c.logger.Debug("%s detected, continuing with PVE collection", pveConfigPath)
 
 	clustered := false
 	if isClustered, err := c.isClusteredPVE(ctx); err != nil {
@@ -125,27 +133,35 @@ func (c *Collector) CollectPVEConfigs(ctx context.Context) error {
 // collectPVEDirectories collects PVE-specific directories
 func (c *Collector) collectPVEDirectories(ctx context.Context, clustered bool) error {
 	c.logger.Debug("Snapshotting PVE directories (clustered=%v)", clustered)
-	// PVE main configuration directory
+
+	pveConfigPath := c.effectivePVEConfigPath()
 	if err := c.safeCopyDir(ctx,
-		"/etc/pve",
-		filepath.Join(c.tempDir, "etc/pve"),
+		pveConfigPath,
+		c.targetPathFor(pveConfigPath),
 		"PVE configuration"); err != nil {
 		return err
 	}
 
 	// Cluster configuration (if clustered)
+	clusterPath := c.effectivePVEClusterPath()
 	if c.config.BackupClusterConfig && clustered {
+		corosyncPath := c.config.CorosyncConfigPath
+		if corosyncPath == "" {
+			corosyncPath = filepath.Join(pveConfigPath, "corosync.conf")
+		} else if !filepath.IsAbs(corosyncPath) {
+			corosyncPath = filepath.Join(pveConfigPath, corosyncPath)
+		}
 		if err := c.safeCopyFile(ctx,
-			"/etc/pve/corosync.conf",
-			filepath.Join(c.tempDir, "etc/pve/corosync.conf"),
+			corosyncPath,
+			c.targetPathFor(corosyncPath),
 			"Corosync configuration"); err != nil {
 			c.logger.Warning("Failed to copy corosync.conf: %v", err)
 		}
 
 		// Cluster directory
 		if err := c.safeCopyDir(ctx,
-			"/var/lib/pve-cluster",
-			filepath.Join(c.tempDir, "var/lib/pve-cluster"),
+			clusterPath,
+			c.targetPathFor(clusterPath),
 			"PVE cluster data"); err != nil {
 			c.logger.Warning("Failed to copy cluster data: %v", err)
 		}
@@ -153,9 +169,10 @@ func (c *Collector) collectPVEDirectories(ctx context.Context, clustered bool) e
 
 	// Firewall configuration
 	if c.config.BackupPVEFirewall {
+		firewallSrc := filepath.Join(pveConfigPath, "firewall")
 		if err := c.safeCopyDir(ctx,
-			"/etc/pve/firewall",
-			filepath.Join(c.tempDir, "etc/pve/firewall"),
+			firewallSrc,
+			c.targetPathFor(firewallSrc),
 			"PVE firewall"); err != nil {
 			c.logger.Debug("No firewall configuration found")
 		}
@@ -163,9 +180,15 @@ func (c *Collector) collectPVEDirectories(ctx context.Context, clustered bool) e
 
 	// VZDump configuration
 	if c.config.BackupVZDumpConfig {
+		vzdumpPath := c.config.VzdumpConfigPath
+		if vzdumpPath == "" {
+			vzdumpPath = "/etc/vzdump.conf"
+		} else if !filepath.IsAbs(vzdumpPath) {
+			vzdumpPath = filepath.Join(pveConfigPath, vzdumpPath)
+		}
 		if err := c.safeCopyFile(ctx,
-			"/etc/vzdump.conf",
-			filepath.Join(c.tempDir, "etc/vzdump.conf"),
+			vzdumpPath,
+			c.targetPathFor(vzdumpPath),
 			"VZDump configuration"); err != nil {
 			c.logger.Debug("No vzdump.conf found")
 		}
@@ -365,23 +388,24 @@ func (c *Collector) collectPVECommands(ctx context.Context, clustered bool) (*pv
 // collectVMConfigs collects VM and Container configurations
 func (c *Collector) collectVMConfigs(ctx context.Context) error {
 	c.logger.Debug("Collecting VM and container configuration directories")
+	pveConfigPath := c.effectivePVEConfigPath()
 	// QEMU VMs
-	vmConfigDir := "/etc/pve/qemu-server"
-	if _, err := os.Stat(vmConfigDir); err == nil {
+	vmConfigDir := filepath.Join(pveConfigPath, "qemu-server")
+	if stat, err := os.Stat(vmConfigDir); err == nil && stat.IsDir() {
 		if err := c.safeCopyDir(ctx,
 			vmConfigDir,
-			filepath.Join(c.tempDir, "etc/pve/qemu-server"),
+			c.targetPathFor(vmConfigDir),
 			"VM configurations"); err != nil {
 			return fmt.Errorf("failed to copy VM configs: %w", err)
 		}
 	}
 
 	// LXC Containers
-	lxcConfigDir := "/etc/pve/lxc"
-	if _, err := os.Stat(lxcConfigDir); err == nil {
+	lxcConfigDir := filepath.Join(pveConfigPath, "lxc")
+	if stat, err := os.Stat(lxcConfigDir); err == nil && stat.IsDir() {
 		if err := c.safeCopyDir(ctx,
 			lxcConfigDir,
-			filepath.Join(c.tempDir, "etc/pve/lxc"),
+			c.targetPathFor(lxcConfigDir),
 			"Container configurations"); err != nil {
 			return fmt.Errorf("failed to copy container configs: %w", err)
 		}
@@ -460,6 +484,32 @@ func (c *Collector) collectPVEJobs(ctx context.Context, nodes []string) error {
 
 	c.logger.Debug("PVE job collection completed (jobs dir: %s)", jobsDir)
 	return nil
+}
+
+func (c *Collector) effectivePVEConfigPath() string {
+	if path := strings.TrimSpace(c.config.PVEConfigPath); path != "" {
+		return path
+	}
+	return "/etc/pve"
+}
+
+func (c *Collector) effectivePVEClusterPath() string {
+	if path := strings.TrimSpace(c.config.PVEClusterPath); path != "" {
+		return path
+	}
+	return "/var/lib/pve-cluster"
+}
+
+func (c *Collector) targetPathFor(src string) string {
+	clean := filepath.Clean(src)
+	if filepath.IsAbs(clean) {
+		clean = strings.TrimPrefix(clean, string(os.PathSeparator))
+	}
+	clean = strings.Trim(clean, string(os.PathSeparator))
+	if clean == "" || clean == "." {
+		clean = "pve"
+	}
+	return filepath.Join(c.tempDir, clean)
 }
 
 func (c *Collector) collectPVESchedules(ctx context.Context) error {
@@ -625,13 +675,17 @@ func (c *Collector) collectPVEStorageMetadata(ctx context.Context, storages []pv
 			meta.DiskUsage = strings.TrimSpace(string(usageData))
 		}
 
-		patterns := []string{
-			"*.vma", "*.vma.gz", "*.vma.lz4", "*.vma.zst",
-			"*.tar", "*.tar.gz", "*.tar.lz4", "*.tar.zst",
-			"*.log", "*.notes",
+		includePatterns := c.config.PxarFileIncludePatterns
+		if len(includePatterns) == 0 {
+			includePatterns = []string{
+				"*.vma", "*.vma.gz", "*.vma.lz4", "*.vma.zst",
+				"*.tar", "*.tar.gz", "*.tar.lz4", "*.tar.zst",
+				"*.log", "*.notes",
+			}
 		}
+		excludePatterns := c.config.PxarFileExcludePatterns
 
-		if files, err := c.sampleFiles(ctx, storage.Path, patterns, 3, 100); err == nil && len(files) > 0 {
+		if files, err := c.sampleFiles(ctx, storage.Path, includePatterns, excludePatterns, 3, 100); err == nil && len(files) > 0 {
 			meta.SampleFiles = files
 		}
 

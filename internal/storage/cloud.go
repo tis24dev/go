@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/tis24dev/proxmox-backup/internal/config"
@@ -19,24 +21,100 @@ import (
 // CloudStorage implements the Storage interface for cloud storage using rclone
 // All errors from cloud storage are NON-FATAL - they log warnings but don't abort the backup
 // Uses comprehensible timeout names: CONNECTION (for remote check) and OPERATION (for upload/download)
+const (
+	cloudUploadModeSequential = "sequential"
+	cloudUploadModeParallel   = "parallel"
+)
+
 type CloudStorage struct {
-	config      *config.Config
-	logger      *logging.Logger
-	remote      string
-	execCommand func(ctx context.Context, name string, args ...string) ([]byte, error)
-	lookPath    func(string) (string, error)
-	sleep       func(time.Duration)
+	config         *config.Config
+	logger         *logging.Logger
+	remote         string
+	remotePrefix   string
+	uploadMode     string
+	parallelJobs   int
+	parallelVerify bool
+	execCommand    func(ctx context.Context, name string, args ...string) ([]byte, error)
+	lookPath       func(string) (string, error)
+	sleep          func(time.Duration)
+}
+
+func (c *CloudStorage) remoteLabel() string {
+	if c.remotePrefix != "" {
+		return fmt.Sprintf("%s:%s", c.remote, c.remotePrefix)
+	}
+	return c.remote + ":"
+}
+
+func (c *CloudStorage) remoteBase() string {
+	return c.remoteLabel()
+}
+
+func (c *CloudStorage) remotePathFor(name string) string {
+	clean := path.Clean(name)
+	if strings.HasPrefix(clean, "..") {
+		clean = filepath.Base(clean)
+	}
+	if c.remotePrefix != "" {
+		clean = path.Join(c.remotePrefix, clean)
+	}
+	return fmt.Sprintf("%s:%s", c.remote, clean)
+}
+
+func splitRemoteRef(ref string) (remoteName, relPath string) {
+	parts := strings.SplitN(ref, ":", 2)
+	if len(parts) < 2 {
+		return ref, ""
+	}
+	return parts[0], parts[1]
+}
+
+func remoteDirRef(ref string) string {
+	remoteName, relPath := splitRemoteRef(ref)
+	if relPath == "" {
+		return remoteName + ":"
+	}
+	dir := path.Dir(relPath)
+	if dir == "." || dir == "/" || dir == "" {
+		return remoteName + ":"
+	}
+	return fmt.Sprintf("%s:%s", remoteName, dir)
+}
+
+func remoteBaseName(ref string) string {
+	_, relPath := splitRemoteRef(ref)
+	if relPath == "" {
+		return ""
+	}
+	trimmed := strings.Trim(relPath, "/")
+	if trimmed == "" {
+		return ""
+	}
+	return path.Base(trimmed)
 }
 
 // NewCloudStorage creates a new cloud storage instance
 func NewCloudStorage(cfg *config.Config, logger *logging.Logger) (*CloudStorage, error) {
+	prefix := strings.Trim(strings.TrimSpace(cfg.CloudRemotePath), "/")
+	mode := strings.ToLower(strings.TrimSpace(cfg.CloudUploadMode))
+	if mode != cloudUploadModeParallel {
+		mode = cloudUploadModeSequential
+	}
+	parallelJobs := cfg.CloudParallelJobs
+	if parallelJobs <= 0 {
+		parallelJobs = 1
+	}
 	return &CloudStorage{
-		config:      cfg,
-		logger:      logger,
-		remote:      cfg.CloudRemote,
-		execCommand: defaultExecCommand,
-		lookPath:    exec.LookPath,
-		sleep:       time.Sleep,
+		config:         cfg,
+		logger:         logger,
+		remote:         cfg.CloudRemote,
+		remotePrefix:   prefix,
+		uploadMode:     mode,
+		parallelJobs:   parallelJobs,
+		parallelVerify: cfg.CloudParallelVerify,
+		execCommand:    defaultExecCommand,
+		lookPath:       exec.LookPath,
+		sleep:          time.Sleep,
 	}, nil
 }
 
@@ -70,7 +148,7 @@ func (c *CloudStorage) DetectFilesystem(ctx context.Context) (*FilesystemInfo, e
 		return nil, &StorageError{
 			Location:    LocationCloud,
 			Operation:   "detect_filesystem",
-			Path:        c.remote,
+			Path:        c.remoteLabel(),
 			Err:         fmt.Errorf("rclone command not found in PATH"),
 			IsCritical:  false,
 			Recoverable: true,
@@ -80,32 +158,32 @@ func (c *CloudStorage) DetectFilesystem(ctx context.Context) (*FilesystemInfo, e
 	// Check if remote is configured and accessible
 	// Use CONNECTION timeout for this check (short timeout)
 	c.logger.Info("Checking cloud remote accessibility: %s (timeout: %ds)",
-		c.remote,
+		c.remoteLabel(),
 		c.config.RcloneTimeoutConnection)
 
 	if err := c.checkRemoteAccessible(ctx); err != nil {
-		c.logger.Warning("WARNING: Cloud remote %s is not accessible: %v", c.remote, err)
+		c.logger.Warning("WARNING: Cloud remote %s is not accessible: %v", c.remoteLabel(), err)
 		c.logger.Warning("WARNING: Cloud backup will be skipped")
 		c.logger.Warning("HINT: Check your rclone configuration with: rclone config show %s", c.remote)
 		return nil, &StorageError{
 			Location:    LocationCloud,
 			Operation:   "check_remote",
-			Path:        c.remote,
+			Path:        c.remoteLabel(),
 			Err:         fmt.Errorf("remote not accessible (connection timeout: %ds): %w", c.config.RcloneTimeoutConnection, err),
 			IsCritical:  false,
 			Recoverable: true,
 		}
 	}
 
-	c.logger.Info("Cloud remote %s is accessible", c.remote)
+	c.logger.Info("Cloud remote %s is accessible", c.remoteLabel())
 
 	// Return minimal filesystem info (cloud doesn't have a real filesystem type)
 	return &FilesystemInfo{
-		Path:              c.remote,
+		Path:              c.remoteLabel(),
 		Type:              FilesystemType("rclone-" + c.remote),
 		SupportsOwnership: false,
 		IsNetworkFS:       true,
-		MountPoint:        c.remote,
+		MountPoint:        c.remoteLabel(),
 		Device:            "cloud",
 	}, nil
 }
@@ -128,7 +206,7 @@ func (c *CloudStorage) checkRemoteAccessible(ctx context.Context) error {
 	defer cancel()
 
 	// Try to list the root of the remote (quick check)
-	args := []string{"rclone", "lsd", c.remote + ":", "--max-depth", "1"}
+	args := []string{"rclone", "lsd", c.remoteBase(), "--max-depth", "1"}
 
 	c.logger.Debug("Running: %s", strings.Join(args, " "))
 
@@ -169,12 +247,12 @@ func (c *CloudStorage) Store(ctx context.Context, backupFile string, metadata *t
 	}
 
 	filename := filepath.Base(backupFile)
-	remoteFile := c.remote + ":" + filename
+	remoteFile := c.remotePathFor(filename)
 
 	c.logger.Info("Uploading backup to cloud storage: %s (%s) -> %s (timeout: %ds)",
 		filename,
 		utils.FormatBytes(stat.Size()),
-		c.remote,
+		c.remoteLabel(),
 		c.config.RcloneTimeoutOperation)
 	c.logger.Debug("Cloud storage: upload retries=%d threads=%d bwlimit=%s",
 		c.config.RcloneRetries, c.config.RcloneTransfers, c.config.RcloneBandwidthLimit)
@@ -183,37 +261,12 @@ func (c *CloudStorage) Store(ctx context.Context, backupFile string, metadata *t
 	uploadCtx, cancel := context.WithTimeout(ctx, time.Duration(c.config.RcloneTimeoutOperation)*time.Second)
 	defer cancel()
 
-	// Upload using rclone with retries
-	if err := c.uploadWithRetry(uploadCtx, backupFile, remoteFile); err != nil {
-		c.logger.Warning("WARNING: Cloud Storage: File upload failed for %s: %v", filename, err)
-		c.logger.Warning("WARNING: Cloud Storage: Backup not saved to %s", c.remote)
-		return &StorageError{
-			Location:    LocationCloud,
-			Operation:   "upload",
-			Path:        backupFile,
-			Err:         err,
-			IsCritical:  false,
-			Recoverable: true,
-		}
-	}
-
-	// Verify upload
-	c.logger.Info("Verifying cloud upload: %s", filename)
-	verified, err := c.VerifyUpload(ctx, backupFile, remoteFile)
-	if err != nil || !verified {
-		c.logger.Warning("WARNING: Cloud Storage: Upload verification failed for %s: %v", filename, err)
-		c.logger.Warning("WARNING: File was uploaded but could not be verified - it may be corrupt")
-		return &StorageError{
-			Location:    LocationCloud,
-			Operation:   "verify",
-			Path:        backupFile,
-			Err:         fmt.Errorf("verification failed: %w", err),
-			IsCritical:  false,
-			Recoverable: true,
-		}
-	}
-
-	// Upload associated files if not bundled
+	tasks := make([]uploadTask, 0, 4)
+	tasks = append(tasks, uploadTask{
+		local:  backupFile,
+		remote: remoteFile,
+		verify: true,
+	})
 	if !c.config.BundleAssociatedFiles {
 		associatedFiles := []string{
 			backupFile + ".sha256",
@@ -226,31 +279,45 @@ func (c *CloudStorage) Store(ctx context.Context, backupFile string, metadata *t
 				continue // Skip if doesn't exist
 			}
 
-			remoteAssocFile := c.remote + ":" + filepath.Base(srcFile)
-			uploadCtx2, cancel2 := context.WithTimeout(ctx, time.Duration(c.config.RcloneTimeoutOperation)*time.Second)
-			defer cancel2()
-
-			if err := c.uploadWithRetry(uploadCtx2, srcFile, remoteAssocFile); err != nil {
-				c.logger.Warning("WARNING: Cloud Storage: Failed to upload associated file %s: %v",
-					filepath.Base(srcFile), err)
-				// Continue with other files
-			}
+			tasks = append(tasks, uploadTask{
+				local:  srcFile,
+				remote: c.remotePathFor(filepath.Base(srcFile)),
+				verify: c.parallelVerify,
+			})
 		}
 	} else {
 		// Upload bundle file
 		bundleFile := backupFile + ".bundle.tar"
 		if _, err := os.Stat(bundleFile); err == nil {
-			remoteBundle := c.remote + ":" + filepath.Base(bundleFile)
-			uploadCtx3, cancel3 := context.WithTimeout(ctx, time.Duration(c.config.RcloneTimeoutOperation)*time.Second)
-			defer cancel3()
-
-			if err := c.uploadWithRetry(uploadCtx3, bundleFile, remoteBundle); err != nil {
-				c.logger.Warning("WARNING: Cloud Storage: Failed to upload bundle %s: %v",
-					filepath.Base(bundleFile), err)
-			}
+			tasks = append(tasks, uploadTask{
+				local:  bundleFile,
+				remote: c.remotePathFor(filepath.Base(bundleFile)),
+				verify: c.parallelVerify,
+			})
 		}
 	}
 
+	primaryFailed, err := c.uploadTasks(uploadCtx, tasks)
+	if err != nil {
+		op := "upload_associated"
+		target := "associated files"
+		if primaryFailed {
+			op = "upload"
+			target = "primary backup"
+			c.logger.Warning("WARNING: Cloud Storage: Backup not saved to %s", c.remoteLabel())
+		}
+		c.logger.Warning("WARNING: Cloud Storage: Failed to upload %s: %v", target, err)
+		return &StorageError{
+			Location:    LocationCloud,
+			Operation:   op,
+			Path:        backupFile,
+			Err:         err,
+			IsCritical:  false,
+			Recoverable: true,
+		}
+	}
+
+	c.logger.Info("Cloud storage: upload and verification completed for %s", filename)
 	c.logger.Debug("✓ Cloud Storage: File uploaded")
 
 	if count := c.countBackups(ctx); count >= 0 {
@@ -331,9 +398,110 @@ func (c *CloudStorage) uploadWithRetry(ctx context.Context, localFile, remoteFil
 		lastErr)
 }
 
+type uploadTask struct {
+	local  string
+	remote string
+	verify bool
+}
+
+func (c *CloudStorage) uploadTasks(ctx context.Context, tasks []uploadTask) (bool, error) {
+	if len(tasks) == 0 {
+		return false, nil
+	}
+
+	runUpload := func(parentCtx context.Context, task uploadTask) error {
+		taskCtx, cancel := context.WithTimeout(parentCtx, time.Duration(c.config.RcloneTimeoutOperation)*time.Second)
+		defer cancel()
+		if err := c.uploadWithRetry(taskCtx, task.local, task.remote); err != nil {
+			return err
+		}
+		if task.verify {
+			if ok, err := c.VerifyUpload(parentCtx, task.local, task.remote); err != nil || !ok {
+				if err == nil {
+					err = fmt.Errorf("verification failed")
+				}
+				return err
+			}
+		}
+		return nil
+	}
+
+	first := tasks[0]
+	if err := runUpload(ctx, first); err != nil {
+		return true, fmt.Errorf("%s: %w", filepath.Base(first.local), err)
+	}
+
+	remaining := tasks[1:]
+	if len(remaining) == 0 {
+		return false, nil
+	}
+
+	if c.uploadMode != cloudUploadModeParallel || c.parallelJobs <= 1 {
+		for _, task := range remaining {
+			if err := runUpload(ctx, task); err != nil {
+				return false, fmt.Errorf("%s: %w", filepath.Base(task.local), err)
+			}
+		}
+		return false, nil
+	}
+
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	errCh := make(chan error, len(remaining))
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, c.parallelJobs)
+
+	for _, task := range remaining {
+		task := task
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			select {
+			case sem <- struct{}{}:
+			case <-ctx.Done():
+				return
+			}
+			defer func() { <-sem }()
+
+			if err := runUpload(ctx, task); err != nil {
+				select {
+				case errCh <- fmt.Errorf("%s: %w", filepath.Base(task.local), err):
+				default:
+				}
+				cancel()
+			}
+		}()
+	}
+
+	wg.Wait()
+	close(errCh)
+	if err, ok := <-errCh; ok {
+		return false, err
+	}
+	return false, nil
+}
+
+// UploadToRemotePath uploads an arbitrary file to the provided remote path using
+// the same retry and verification logic used for backups.
+func (c *CloudStorage) UploadToRemotePath(ctx context.Context, localFile, remoteFile string, verify bool) error {
+	if err := c.uploadWithRetry(ctx, localFile, remoteFile); err != nil {
+		return err
+	}
+	if verify {
+		if ok, err := c.VerifyUpload(ctx, localFile, remoteFile); err != nil || !ok {
+			if err == nil {
+				err = fmt.Errorf("verification failed")
+			}
+			return err
+		}
+	}
+	return nil
+}
+
 // rcloneCopy executes rclone copy command
 func (c *CloudStorage) rcloneCopy(ctx context.Context, localFile, remoteFile string) error {
-	args := []string{"rclone", "copy"}
+	args := []string{"rclone", "copyto"}
 
 	// Add bandwidth limit if configured
 	if c.config.RcloneBandwidthLimit != "" {
@@ -349,7 +517,7 @@ func (c *CloudStorage) rcloneCopy(ctx context.Context, localFile, remoteFile str
 	args = append(args, "--progress", "--stats", "10s")
 
 	// Add source and destination
-	args = append(args, localFile, filepath.Dir(remoteFile)+":")
+	args = append(args, localFile, remoteFile)
 
 	c.logger.Debug("Running: %s", strings.Join(args, " "))
 
@@ -374,7 +542,7 @@ func (c *CloudStorage) VerifyUpload(ctx context.Context, localFile, remoteFile s
 		return false, fmt.Errorf("cannot stat local file: %w", err)
 	}
 
-	filename := filepath.Base(remoteFile)
+	filename := remoteBaseName(remoteFile)
 
 	// Use primary verification method by default
 	if c.config.RcloneVerifyMethod != "alternative" {
@@ -427,8 +595,8 @@ func (c *CloudStorage) verifyPrimary(ctx context.Context, remoteFile string, exp
 // verifyAlternative uses 'rclone ls | grep' to verify upload (alternative method)
 func (c *CloudStorage) verifyAlternative(ctx context.Context, remoteFile string, expectedSize int64, filename string) (bool, error) {
 	// List files in remote directory
-	remoteDir := filepath.Dir(remoteFile)
-	args := []string{"rclone", "ls", remoteDir + ":"}
+	remoteDir := remoteDirRef(remoteFile)
+	args := []string{"rclone", "ls", remoteDir}
 
 	c.logger.Debug("Verification (alternative): %s | grep %s", strings.Join(args, " "), filename)
 
@@ -481,7 +649,7 @@ func (c *CloudStorage) List(ctx context.Context) ([]*types.BackupMetadata, error
 	}
 
 	// List files in remote
-	args := []string{"rclone", "lsl", c.remote + ":"}
+	args := []string{"rclone", "lsl", c.remoteBase()}
 
 	output, err := c.exec(ctx, args[0], args[1:]...)
 
@@ -490,7 +658,7 @@ func (c *CloudStorage) List(ctx context.Context) ([]*types.BackupMetadata, error
 		return nil, &StorageError{
 			Location:    LocationCloud,
 			Operation:   "list",
-			Path:        c.remote,
+			Path:        c.remoteLabel(),
 			Err:         fmt.Errorf("rclone lsl failed: %w", err),
 			IsCritical:  false,
 			Recoverable: true,
@@ -561,7 +729,7 @@ func (c *CloudStorage) Delete(ctx context.Context, backupFile string) error {
 	}
 
 	filename := filepath.Base(backupFile)
-	remoteFile := c.remote + ":" + filename
+	remoteFile := c.remotePathFor(filename)
 
 	c.logger.Debug("Deleting cloud backup: %s", filename)
 
@@ -570,18 +738,11 @@ func (c *CloudStorage) Delete(ctx context.Context, backupFile string) error {
 
 	// If bundling is enabled, only delete the bundle
 	if c.config.BundleAssociatedFiles {
-		bundleFile := c.remote + ":" + filename + ".bundle.tar"
-		filesToDelete = []string{bundleFile}
+		filesToDelete = []string{c.remotePathFor(filename + ".bundle.tar")}
 	} else {
 		// Delete associated files
-		associatedFiles := []string{
-			remoteFile + ".sha256",
-			remoteFile + ".metadata",
-			remoteFile + ".metadata.sha256",
-		}
-
-		for _, f := range associatedFiles {
-			filesToDelete = append(filesToDelete, f)
+		for _, suffix := range []string{".sha256", ".metadata", ".metadata.sha256"} {
+			filesToDelete = append(filesToDelete, c.remotePathFor(filename+suffix))
 		}
 	}
 
@@ -626,7 +787,7 @@ func (c *CloudStorage) ApplyRetention(ctx context.Context, maxBackups int) (int,
 		return 0, &StorageError{
 			Location:    LocationCloud,
 			Operation:   "apply_retention",
-			Path:        c.remote,
+			Path:        c.remoteLabel(),
 			Err:         err,
 			IsCritical:  false,
 			Recoverable: true,

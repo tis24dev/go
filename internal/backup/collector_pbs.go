@@ -675,8 +675,12 @@ func (c *Collector) processPxarDatastore(ctx context.Context, ds pbsDatastore, m
 		c.logger.Debug("PXAR: datastore %s -> sampleDirectories error: %v", ds.Name, err)
 	}
 
-	patterns := []string{"*.pxar", "*.pxar.*", "catalog.pxar", "catalog.pxar.*"}
-	if files, err := c.sampleFiles(ctx, ds.Path, patterns, 8, 200); err == nil && len(files) > 0 {
+	includePatterns := c.config.PxarFileIncludePatterns
+	if len(includePatterns) == 0 {
+		includePatterns = []string{"*.pxar", "*.pxar.*", "catalog.pxar", "catalog.pxar.*"}
+	}
+	excludePatterns := c.config.PxarFileExcludePatterns
+	if files, err := c.sampleFiles(ctx, ds.Path, includePatterns, excludePatterns, 8, 200); err == nil && len(files) > 0 {
 		meta.SamplePxarFiles = files
 		c.logger.Debug("PXAR: datastore %s -> selected %d sample pxar files", ds.Name, len(files))
 	} else if err != nil {
@@ -837,6 +841,33 @@ func (c *Collector) getDatastoreList(ctx context.Context) ([]pbsDatastore, error
 				Name:    name,
 				Path:    strings.TrimSpace(entry.Path),
 				Comment: strings.TrimSpace(entry.Comment),
+			})
+		}
+	}
+
+	if len(c.config.PBSDatastorePaths) > 0 {
+		existing := make(map[string]struct{}, len(datastores))
+		for _, ds := range datastores {
+			if ds.Path != "" {
+				existing[ds.Path] = struct{}{}
+			}
+		}
+		for idx, override := range c.config.PBSDatastorePaths {
+			override = strings.TrimSpace(override)
+			if override == "" {
+				continue
+			}
+			if _, ok := existing[override]; ok {
+				continue
+			}
+			name := filepath.Base(override)
+			if name == "" || name == "." || name == string(os.PathSeparator) {
+				name = fmt.Sprintf("datastore_%d", idx+1)
+			}
+			datastores = append(datastores, pbsDatastore{
+				Name:    name,
+				Path:    override,
+				Comment: "configured via PBS_DATASTORE_PATH",
 			})
 		}
 	}

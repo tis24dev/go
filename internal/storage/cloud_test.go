@@ -3,6 +3,8 @@ package storage
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -55,6 +57,13 @@ func (q *commandQueue) exec(ctx context.Context, name string, args ...string) ([
 func newCloudStorageForTest(cfg *config.Config) *CloudStorage {
 	cs, _ := NewCloudStorage(cfg, newTestLogger())
 	return cs
+}
+
+func writeTestFile(t *testing.T, path, data string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(data), 0o640); err != nil {
+		t.Fatalf("failed to write %s: %v", path, err)
+	}
 }
 
 func TestCloudStorageUploadWithRetryEventuallySucceeds(t *testing.T) {
@@ -162,5 +171,145 @@ func TestCloudStorageApplyRetentionDeletesOldest(t *testing.T) {
 	}
 	if deleted != 1 {
 		t.Fatalf("ApplyRetention() deleted = %d, want 1", deleted)
+	}
+}
+
+func TestCloudStorageStoreUploadsWithRemotePrefix(t *testing.T) {
+	tmpDir := t.TempDir()
+	backupFile := filepath.Join(tmpDir, "pbs1-backup.tar.zst")
+	writeTestFile(t, backupFile, "primary")
+	writeTestFile(t, backupFile+".sha256", "sum")
+	writeTestFile(t, backupFile+".metadata", "{}")
+	writeTestFile(t, backupFile+".metadata.sha256", "meta-sum")
+
+	cfg := &config.Config{
+		CloudEnabled:           true,
+		CloudRemote:            "remote",
+		CloudRemotePath:        "tenants/a",
+		BundleAssociatedFiles:  false,
+		RcloneRetries:          1,
+		RcloneTimeoutOperation: 10,
+	}
+
+	cs := newCloudStorageForTest(cfg)
+	cs.sleep = func(time.Duration) {}
+	queue := &commandQueue{
+		t: t,
+		queue: []queuedResponse{
+			{name: "rclone", args: []string{"copyto", "--progress", "--stats", "10s", backupFile, "remote:tenants/a/pbs1-backup.tar.zst"}},
+			{name: "rclone", args: []string{"lsl", "remote:tenants/a/pbs1-backup.tar.zst"}, out: "7 2025-11-13 10:00:00 pbs1-backup.tar.zst"},
+			{name: "rclone", args: []string{"copyto", "--progress", "--stats", "10s", backupFile + ".sha256", "remote:tenants/a/pbs1-backup.tar.zst.sha256"}},
+			{name: "rclone", args: []string{"copyto", "--progress", "--stats", "10s", backupFile + ".metadata", "remote:tenants/a/pbs1-backup.tar.zst.metadata"}},
+			{name: "rclone", args: []string{"copyto", "--progress", "--stats", "10s", backupFile + ".metadata.sha256", "remote:tenants/a/pbs1-backup.tar.zst.metadata.sha256"}},
+			{name: "rclone", args: []string{"lsl", "remote:tenants/a"}, out: "7 2025-11-13 10:00:00 pbs1-backup.tar.zst"},
+		},
+	}
+	cs.execCommand = queue.exec
+
+	if err := cs.Store(context.Background(), backupFile, nil); err != nil {
+		t.Fatalf("Store() error = %v", err)
+	}
+	if len(queue.calls) != 6 {
+		t.Fatalf("expected 6 rclone calls, got %d", len(queue.calls))
+	}
+}
+
+func TestCloudStorageStorePrimaryFailure(t *testing.T) {
+	tmpDir := t.TempDir()
+	backupFile := filepath.Join(tmpDir, "pbs1-backup.tar.zst")
+	writeTestFile(t, backupFile, "primary")
+
+	cfg := &config.Config{
+		CloudEnabled:           true,
+		CloudRemote:            "remote",
+		BundleAssociatedFiles:  false,
+		RcloneRetries:          1,
+		RcloneTimeoutOperation: 5,
+	}
+
+	cs := newCloudStorageForTest(cfg)
+	queue := &commandQueue{
+		t: t,
+		queue: []queuedResponse{
+			{name: "rclone", args: []string{"copyto", "--progress", "--stats", "10s", backupFile, "remote:pbs1-backup.tar.zst"}, err: errors.New("boom")},
+		},
+	}
+	cs.execCommand = queue.exec
+
+	err := cs.Store(context.Background(), backupFile, nil)
+	if err == nil {
+		t.Fatal("Store() expected error, got nil")
+	}
+	var storageErr *StorageError
+	if !errors.As(err, &storageErr) {
+		t.Fatalf("expected StorageError, got %T", err)
+	}
+	if storageErr.Operation != "upload" {
+		t.Fatalf("StorageError.Operation = %s; want upload", storageErr.Operation)
+	}
+}
+
+func TestCloudStorageStoreAssociatedFailure(t *testing.T) {
+	tmpDir := t.TempDir()
+	backupFile := filepath.Join(tmpDir, "pbs1-backup.tar.zst")
+	writeTestFile(t, backupFile, "primary")
+	writeTestFile(t, backupFile+".sha256", "sum")
+
+	cfg := &config.Config{
+		CloudEnabled:           true,
+		CloudRemote:            "remote",
+		BundleAssociatedFiles:  false,
+		RcloneRetries:          1,
+		RcloneTimeoutOperation: 5,
+	}
+
+	cs := newCloudStorageForTest(cfg)
+	queue := &commandQueue{
+		t: t,
+		queue: []queuedResponse{
+			{name: "rclone", args: []string{"copyto", "--progress", "--stats", "10s", backupFile, "remote:pbs1-backup.tar.zst"}},
+			{name: "rclone", args: []string{"lsl", "remote:pbs1-backup.tar.zst"}, out: "7 2025-11-13 10:00:00 pbs1-backup.tar.zst"},
+			{name: "rclone", args: []string{"copyto", "--progress", "--stats", "10s", backupFile + ".sha256", "remote:pbs1-backup.tar.zst.sha256"}, err: errors.New("assoc failed")},
+		},
+	}
+	cs.execCommand = queue.exec
+
+	err := cs.Store(context.Background(), backupFile, nil)
+	if err == nil {
+		t.Fatal("Store() expected error, got nil")
+	}
+	var storageErr *StorageError
+	if !errors.As(err, &storageErr) {
+		t.Fatalf("expected StorageError, got %T", err)
+	}
+	if storageErr.Operation != "upload_associated" {
+		t.Fatalf("StorageError.Operation = %s; want upload_associated", storageErr.Operation)
+	}
+}
+
+func TestCloudStorageUploadToRemotePath(t *testing.T) {
+	tmpDir := t.TempDir()
+	localFile := filepath.Join(tmpDir, "logfile.txt")
+	writeTestFile(t, localFile, "log")
+
+	cfg := &config.Config{
+		CloudEnabled:           true,
+		CloudRemote:            "remote",
+		RcloneRetries:          1,
+		RcloneTimeoutOperation: 5,
+	}
+
+	cs := newCloudStorageForTest(cfg)
+	queue := &commandQueue{
+		t: t,
+		queue: []queuedResponse{
+			{name: "rclone", args: []string{"copyto", "--progress", "--stats", "10s", localFile, "other:logs/logfile.txt"}},
+			{name: "rclone", args: []string{"lsl", "other:logs/logfile.txt"}, out: "3 2025-11-13 10:00:00 logfile.txt"},
+		},
+	}
+	cs.execCommand = queue.exec
+
+	if err := cs.UploadToRemotePath(context.Background(), localFile, "other:logs/logfile.txt", true); err != nil {
+		t.Fatalf("UploadToRemotePath() error = %v", err)
 	}
 }

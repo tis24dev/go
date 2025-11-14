@@ -49,7 +49,7 @@ LOCAL_RETENTION_DAYS=7
 TELEGRAM_ENABLED=false
 METRICS_ENABLED=true
 BACKUP_PVE_JOBS=false
-BACKUP_PXAR_FILES=false
+PXAR_SCAN_ENABLE=false
 CUSTOM_BACKUP_PATHS=/etc/custom,/var/data
 BACKUP_BLACKLIST=/var/data/tmp
 `
@@ -177,6 +177,65 @@ BACKUP_BLACKLIST=/var/data/tmp
 
 	if len(cfg.BackupBlacklist) != 1 || cfg.BackupBlacklist[0] != "/var/data/tmp" {
 		t.Errorf("BackupBlacklist = %#v; want [/var/data/tmp]", cfg.BackupBlacklist)
+	}
+}
+
+func TestConfigAdvancedOptions(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "advanced.env")
+	content := `CLOUD_REMOTE_PATH=/tenants/prod/
+CLOUD_UPLOAD_MODE=PARALLEL
+CLOUD_PARALLEL_MAX_JOBS=5
+CLOUD_PARALLEL_VERIFICATION=true
+PXAR_FILE_INCLUDE_PATTERN=*.pxar, catalog.pxar.*
+PXAR_FILE_EXCLUDE_PATTERN=*.tmp;*.lock
+PVE_CONFIG_PATH=/data/etc/pve
+PVE_CLUSTER_PATH=/data/cluster
+COROSYNC_CONFIG_PATH=/data/etc/pve/custom.conf
+VZDUMP_CONFIG_PATH=/data/etc/vzdump.conf
+PBS_DATASTORE_PATH=/mnt/pbs1,/mnt/pbs2,/mnt/pbs3
+`
+	if err := os.WriteFile(configPath, []byte(content), 0644); err != nil {
+		t.Fatalf("Failed to create config file: %v", err)
+	}
+
+	cfg, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+
+	if cfg.CloudRemotePath != "tenants/prod" {
+		t.Errorf("CloudRemotePath = %q; want %q", cfg.CloudRemotePath, "tenants/prod")
+	}
+	if cfg.CloudUploadMode != "parallel" {
+		t.Errorf("CloudUploadMode = %q; want parallel", cfg.CloudUploadMode)
+	}
+	if cfg.CloudParallelJobs != 5 {
+		t.Errorf("CloudParallelJobs = %d; want 5", cfg.CloudParallelJobs)
+	}
+	if !cfg.CloudParallelVerify {
+		t.Error("CloudParallelVerify expected true")
+	}
+	if got := cfg.PxarFileIncludePatterns; len(got) != 2 || got[0] != "*.pxar" || got[1] != "catalog.pxar.*" {
+		t.Errorf("PxarFileIncludePatterns = %#v; want [*.pxar catalog.pxar.*]", got)
+	}
+	if got := cfg.PxarFileExcludePatterns; len(got) != 2 || got[0] != "*.tmp" || got[1] != "*.lock" {
+		t.Errorf("PxarFileExcludePatterns = %#v; want [*.tmp *.lock]", got)
+	}
+	if cfg.PVEConfigPath != "/data/etc/pve" {
+		t.Errorf("PVEConfigPath = %q; want /data/etc/pve", cfg.PVEConfigPath)
+	}
+	if cfg.PVEClusterPath != "/data/cluster" {
+		t.Errorf("PVEClusterPath = %q; want /data/cluster", cfg.PVEClusterPath)
+	}
+	if cfg.CorosyncConfigPath != "/data/etc/pve/custom.conf" {
+		t.Errorf("CorosyncConfigPath = %q; want /data/etc/pve/custom.conf", cfg.CorosyncConfigPath)
+	}
+	if cfg.VzdumpConfigPath != "/data/etc/vzdump.conf" {
+		t.Errorf("VzdumpConfigPath = %q; want /data/etc/vzdump.conf", cfg.VzdumpConfigPath)
+	}
+	if got := cfg.PBSDatastorePaths; len(got) != 3 || got[0] != "/mnt/pbs1" || got[1] != "/mnt/pbs2" || got[2] != "/mnt/pbs3" {
+		t.Errorf("PBSDatastorePaths = %#v; want [/mnt/pbs1 /mnt/pbs2 /mnt/pbs3]", got)
 	}
 }
 

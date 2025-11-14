@@ -236,6 +236,28 @@ go get gopkg.in/yaml.v3@latest
 
 ---
 
+## ⚙️ Config avanzata (pipeline Go)
+
+`configs/backup.env` contiene i flag esclusivi della versione Go. I principali:
+
+### PXAR metadata
+- `PXAR_SCAN_ENABLE`, `PXAR_STOP_ON_CAP`, `PXAR_SCAN_MAX_ROOTS`, `PXAR_ENUM_READDIR_WORKERS`, `PXAR_ENUM_BUDGET_MS` governano quante directory/file vengono enumerati.
+- `PXAR_FILE_INCLUDE_PATTERN` / `PXAR_FILE_EXCLUDE_PATTERN` sono liste (spazi/virgole) di glob per includere o escludere file durante la raccolta.
+
+### Override percorsi
+- `PVE_CONFIG_PATH`, `PVE_CLUSTER_PATH`, `COROSYNC_CONFIG_PATH`, `VZDUMP_CONFIG_PATH` puntano ai path reali quando lavori su mirror montati o snapshot offline.
+- `PBS_DATASTORE_PATH` accetta più percorsi manuali per includere datastore PBS aggiuntivi oltre a quelli rilevati automaticamente.
+
+### Cloud / rclone
+- `CLOUD_REMOTE_PATH` aggiunge un prefisso deterministico dentro al remote rclone (`remote:prefisso/...`).
+- `CLOUD_UPLOAD_MODE` (`sequential` | `parallel`), `CLOUD_PARALLEL_MAX_JOBS` e `CLOUD_PARALLEL_VERIFICATION` controllano worker pool e verifiche dei file associati.
+- `CLOUD_LOG_PATH` deve contenere remote e path finale (es. `myremote:/logs`); a differenza dei backup, non viene combinato con `CLOUD_REMOTE_PATH`.
+- `MAX_*_BACKUPS` si applicano anche alla rotazione dei log (con 1 backup al giorno hai lo stesso numero di log).
+
+> ⚠️ **Non** modificare `reference/env/backup.env`: copia `configs/backup.env`, applica le modifiche Go-only e versiona solo quel file.
+
+---
+
 ## 🐛 Problemi Comuni
 
 ### "go: cannot find main module"

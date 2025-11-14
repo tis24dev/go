@@ -14,19 +14,20 @@ import (
 
 // Config contiene tutta la configurazione del sistema di backup
 type Config struct {
-    // General settings
-    BackupEnabled            bool
-    DebugLevel               types.LogLevel
-    UseColor                 bool
-    ColorizeStepLogs         bool
-    EnableGoBackup           bool
-    BaseDir                  string
-    DisableNetworkPreflight  bool
-    SecurityCheckEnabled     bool
-    AbortOnSecurityIssues    bool
-    AutoUpdateHashes         bool
-    AutoFixPermissions       bool
-    ContinueOnSecurityIssues bool
+	// General settings
+	BackupEnabled            bool
+	DebugLevel               types.LogLevel
+	UseColor                 bool
+	ColorizeStepLogs         bool
+	EnableGoBackup           bool
+	BaseDir                  string
+	DryRun                   bool
+	DisableNetworkPreflight  bool
+	SecurityCheckEnabled     bool
+	AbortOnSecurityIssues    bool
+	AutoUpdateHashes         bool
+	AutoFixPermissions       bool
+	ContinueOnSecurityIssues bool
 	SuspiciousProcesses      []string
 	SafeBracketProcesses     []string
 
@@ -63,6 +64,10 @@ type Config struct {
 	SecondaryPath    string
 	CloudEnabled     bool
 	CloudRemote      string
+	CloudRemotePath  string
+	CloudUploadMode  string
+	CloudParallelJobs   int
+	CloudParallelVerify bool
 
 	// Rclone settings with comprehensible timeout names
 	// RcloneTimeoutConnection: timeout for checking if remote is accessible (default: 30s)
@@ -74,7 +79,7 @@ type Config struct {
 	RcloneRetries           int
 	RcloneVerifyMethod      string // "primary" or "alternative"
 
-	// Retention settings
+	// Retention settings (applied to both backups and logs)
 	LocalRetentionDays     int
 	SecondaryRetentionDays int
 	CloudRetentionDays     int
@@ -162,6 +167,11 @@ type Config struct {
 	PxarIntraConcurrency     int
 	PxarScanFanoutLevel      int
 	PxarScanMaxRoots         int
+	PxarStopOnCap            bool
+	PxarEnumWorkers          int
+	PxarEnumBudgetMs         int
+	PxarFileIncludePatterns  []string
+	PxarFileExcludePatterns  []string
 
 	// System collection options
 	BackupNetworkConfigs    bool
@@ -180,6 +190,11 @@ type Config struct {
 	BackupRootHome          bool
 	BackupScriptRepository  bool
 	BackupUserHomes         bool
+	PVEConfigPath           string
+	PVEClusterPath          string
+	CorosyncConfigPath      string
+	VzdumpConfigPath        string
+	PBSDatastorePaths       []string
 
 	CustomBackupPaths []string
 	BackupBlacklist   []string
@@ -262,6 +277,7 @@ func LoadConfig(configPath string) (*Config, error) {
 func (c *Config) parse() error {
 	// General settings
 	c.BackupEnabled = c.getBool("BACKUP_ENABLED", true)
+	c.DryRun = c.getBool("DRY_RUN", false)
 
 	// DEBUG_LEVEL: supporta sia numerico che string ("standard", "advanced", "extreme")
 	c.DebugLevel = c.getLogLevel("DEBUG_LEVEL", types.LogLevelInfo)
@@ -305,10 +321,10 @@ func (c *Config) parse() error {
 	c.MinDiskSecondaryGB = sanitizeMinDisk(c.getFloat("MIN_DISK_SPACE_SECONDARY_GB", c.MinDiskPrimaryGB))
 	c.MinDiskCloudGB = sanitizeMinDisk(c.getFloat("MIN_DISK_SPACE_CLOUD_GB", c.MinDiskPrimaryGB))
 
-    // Feature flags
-    c.EnableGoBackup = c.getBoolWithFallback([]string{"ENABLE_GO_BACKUP", "ENABLE_GO_PIPELINE"}, true)
-    // Preflight controls
-    c.DisableNetworkPreflight = c.getBool("DISABLE_NETWORK_PREFLIGHT", false)
+	// Feature flags
+	c.EnableGoBackup = c.getBoolWithFallback([]string{"ENABLE_GO_BACKUP", "ENABLE_GO_PIPELINE"}, true)
+	// Preflight controls
+	c.DisableNetworkPreflight = c.getBool("DISABLE_NETWORK_PREFLIGHT", false)
 
 	// Base directory (compatibile con lo script Bash: se non specificato, usa env o default)
 	envBaseDir := os.Getenv("BASE_DIR")
@@ -366,6 +382,17 @@ func (c *Config) parse() error {
 
 	c.CloudEnabled = c.getBoolWithFallback([]string{"ENABLE_CLOUD_BACKUP", "CLOUD_ENABLED"}, false)
 	c.CloudRemote = c.getStringWithFallback([]string{"RCLONE_REMOTE", "CLOUD_REMOTE"}, "")
+	c.CloudRemotePath = strings.Trim(strings.TrimSpace(c.getString("CLOUD_REMOTE_PATH", "")), "/")
+	mode := strings.ToLower(strings.TrimSpace(c.getString("CLOUD_UPLOAD_MODE", "")))
+	if mode != "parallel" {
+		mode = "sequential"
+	}
+	c.CloudUploadMode = mode
+	c.CloudParallelJobs = c.getInt("CLOUD_PARALLEL_MAX_JOBS", 2)
+	if c.CloudParallelJobs <= 0 {
+		c.CloudParallelJobs = 1
+	}
+	c.CloudParallelVerify = c.getBool("CLOUD_PARALLEL_VERIFICATION", false)
 
 	// Rclone settings with comprehensible timeout names
 	c.RcloneTimeoutConnection = c.getInt("RCLONE_TIMEOUT_CONNECTION", 30)
@@ -376,6 +403,7 @@ func (c *Config) parse() error {
 	c.RcloneVerifyMethod = strings.ToLower(c.getString("RCLONE_VERIFY_METHOD", "primary"))
 
 	// Retention: supporta MAX_LOCAL_BACKUPS o LOCAL_RETENTION_DAYS
+	// Applies to both backups and log files
 	c.LocalRetentionDays = c.getIntWithFallback([]string{"MAX_LOCAL_BACKUPS", "LOCAL_RETENTION_DAYS"}, 7)
 	c.SecondaryRetentionDays = c.getIntWithFallback([]string{"MAX_SECONDARY_BACKUPS", "SECONDARY_RETENTION_DAYS"}, 14)
 	c.CloudRetentionDays = c.getIntWithFallback([]string{"MAX_CLOUD_BACKUPS", "CLOUD_RETENTION_DAYS"}, 30)
@@ -461,6 +489,11 @@ func (c *Config) parse() error {
 	c.BackupPVEReplication = c.getBool("BACKUP_PVE_REPLICATION", true)
 	c.BackupPVEBackupFiles = c.getBool("BACKUP_PVE_BACKUP_FILES", true)
 	c.BackupCephConfig = c.getBool("BACKUP_CEPH_CONFIG", true)
+	c.PVEConfigPath = c.getString("PVE_CONFIG_PATH", "/etc/pve")
+	c.PVEClusterPath = c.getString("PVE_CLUSTER_PATH", "/var/lib/pve-cluster")
+	defaultCorosync := filepath.Join(c.PVEConfigPath, "corosync.conf")
+	c.CorosyncConfigPath = c.getString("COROSYNC_CONFIG_PATH", defaultCorosync)
+	c.VzdumpConfigPath = c.getString("VZDUMP_CONFIG_PATH", "/etc/vzdump.conf")
 
 	// PBS-specific collection options
 	c.BackupDatastoreConfigs = c.getBool("BACKUP_DATASTORE_CONFIGS", true)
@@ -470,11 +503,17 @@ func (c *Config) parse() error {
 	c.BackupVerificationJobs = c.getBool("BACKUP_VERIFICATION_JOBS", true)
 	c.BackupTapeConfigs = c.getBool("BACKUP_TAPE_CONFIGS", true)
 	c.BackupPruneSchedules = c.getBool("BACKUP_PRUNE_SCHEDULES", true)
-	c.BackupPxarFiles = c.getBool("BACKUP_PXAR_FILES", true)
+    // PXAR scan enable: prefer new key PXAR_SCAN_ENABLE, fallback to legacy BACKUP_PXAR_FILES
+    c.BackupPxarFiles = c.getBoolWithFallback([]string{"PXAR_SCAN_ENABLE", "BACKUP_PXAR_FILES"}, true)
 	c.PxarDatastoreConcurrency = c.getInt("PXAR_SCAN_DS_CONCURRENCY", 3)
 	c.PxarIntraConcurrency = c.getInt("PXAR_SCAN_INTRA_CONCURRENCY", 4)
 	c.PxarScanFanoutLevel = c.getInt("PXAR_SCAN_FANOUT_LEVEL", 2)
 	c.PxarScanMaxRoots = c.getInt("PXAR_SCAN_MAX_ROOTS", 2048)
+	c.PxarStopOnCap = c.getBool("PXAR_STOP_ON_CAP", false)
+	c.PxarEnumWorkers = c.getInt("PXAR_ENUM_READDIR_WORKERS", 4)
+	c.PxarEnumBudgetMs = c.getInt("PXAR_ENUM_BUDGET_MS", 0)
+	c.PxarFileIncludePatterns = normalizeList(c.getStringSlice("PXAR_FILE_INCLUDE_PATTERN", nil))
+	c.PxarFileExcludePatterns = normalizeList(c.getStringSlice("PXAR_FILE_EXCLUDE_PATTERN", nil))
 
 	// System collection options
 	c.BackupNetworkConfigs = c.getBool("BACKUP_NETWORK_CONFIGS", true)
@@ -493,6 +532,7 @@ func (c *Config) parse() error {
 	c.BackupRootHome = c.getBool("BACKUP_ROOT_HOME", true)
 	c.BackupScriptRepository = c.getBool("BACKUP_SCRIPT_REPOSITORY", true)
 	c.BackupUserHomes = c.getBool("BACKUP_USER_HOMES", true)
+	c.PBSDatastorePaths = normalizeList(c.getStringSlice("PBS_DATASTORE_PATH", nil))
 
 	c.CustomBackupPaths = normalizeList(c.getStringSlice("CUSTOM_BACKUP_PATHS", nil))
 	c.BackupBlacklist = normalizeList(c.getStringSlice("BACKUP_BLACKLIST", nil))

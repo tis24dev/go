@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/tis24dev/proxmox-backup/internal/types"
@@ -11,10 +12,12 @@ import (
 
 // Logger gestisce il logging dell'applicazione
 type Logger struct {
+	mu         sync.Mutex
 	level      types.LogLevel
 	useColor   bool
 	output     io.Writer
 	timeFormat string
+	logFile    *os.File // File di log (opzionale)
 }
 
 // New crea un nuovo logger
@@ -29,12 +32,63 @@ func New(level types.LogLevel, useColor bool) *Logger {
 
 // SetOutput imposta l'output writer del logger
 func (l *Logger) SetOutput(w io.Writer) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if w == nil {
+		l.output = os.Stdout
+		return
+	}
 	l.output = w
 }
 
 // SetLevel imposta il livello di logging
 func (l *Logger) SetLevel(level types.LogLevel) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	l.level = level
+}
+
+// OpenLogFile apre un file di log e inizia la scrittura real-time
+func (l *Logger) OpenLogFile(logPath string) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	// Se c'è già un file aperto, chiudilo prima
+	if l.logFile != nil {
+		l.logFile.Close()
+	}
+
+	// Crea il file di log (O_CREATE|O_WRONLY|O_APPEND)
+	// O_SYNC forza la scrittura immediata su disco (real-time, nessun buffer)
+	file, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND|os.O_SYNC, 0600)
+	if err != nil {
+		return fmt.Errorf("failed to open log file %s: %w", logPath, err)
+	}
+
+	l.logFile = file
+	return nil
+}
+
+// CloseLogFile chiude il file di log (da chiamare dopo le notifiche)
+func (l *Logger) CloseLogFile() error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.logFile == nil {
+		return nil
+	}
+
+	err := l.logFile.Close()
+	l.logFile = nil
+	return err
+}
+
+// GetLogFilePath restituisce il path del file di log attualmente aperto (o "" se nessuno)
+func (l *Logger) GetLogFilePath() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.logFile == nil {
+		return ""
+	}
+	return l.logFile.Name()
 }
 
 // UsesColor returns whether color output is enabled.
@@ -44,11 +98,15 @@ func (l *Logger) UsesColor() bool {
 
 // GetLevel restituisce il livello corrente
 func (l *Logger) GetLevel() types.LogLevel {
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	return l.level
 }
 
 // log è il metodo interno per scrivere i log
 func (l *Logger) log(level types.LogLevel, format string, args ...interface{}) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	if level > l.level {
 		return
 	}
@@ -76,7 +134,8 @@ func (l *Logger) log(level types.LogLevel, format string, args ...interface{}) {
 		}
 	}
 
-	output := fmt.Sprintf("[%s] %s%-8s%s %s\n",
+	// Formato per stdout (con colori se abilitati)
+	outputStdout := fmt.Sprintf("[%s] %s%-8s%s %s\n",
 		timestamp,
 		colorCode,
 		levelStr,
@@ -84,7 +143,20 @@ func (l *Logger) log(level types.LogLevel, format string, args ...interface{}) {
 		message,
 	)
 
-	fmt.Fprint(l.output, output)
+	// Formato per file (senza colori)
+	outputFile := fmt.Sprintf("[%s] %-8s %s\n",
+		timestamp,
+		levelStr,
+		message,
+	)
+
+	// Scrivi su stdout con colori
+	fmt.Fprint(l.output, outputStdout)
+
+	// Se c'è un file di log, scrivi anche lì (senza colori)
+	if l.logFile != nil {
+		fmt.Fprint(l.logFile, outputFile)
+	}
 }
 
 // Debug scrive un log di debug

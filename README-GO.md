@@ -258,7 +258,7 @@ COMPRESSION_LEVEL=6
 > - `BACKUP_PATH`, `LOG_PATH` e la directory per il lock file vengono create automaticamente (in dry-run viene solo loggata l’azione), mantenendo il comportamento dello script Bash.
 > - 🔐 Il blocco *Security* del `backup.env` consente di abilitare il preflight (`SECURITY_CHECK_ENABLED`, `AUTO_UPDATE_HASHES`, `AUTO_FIX_PERMISSIONS`, `CHECK_NETWORK_SECURITY`, ecc.): la Go pipeline verifica i permessi di binario/config, crea le directory mancanti e, se richiesto, controlla firewall, porte sospette e processi anomali prima di eseguire il backup.
 >   - Le liste `SUSPICIOUS_PORTS`, `PORT_WHITELIST`, `SUSPICIOUS_PROCESSES` e `SAFE_BRACKET_PROCESSES` permettono di personalizzare il controllo rete/processi per ridurre i falsi positivi; `AUTO_FIX_PERMISSIONS` corregge automaticamente permessi/owner errati e `CONTINUE_ON_SECURITY_ISSUES` (default `false`) stabilisce se fermare il backup o proseguire nonostante i problemi segnalati.
-> - 🎨 Vuoi evidenziare a colpo d’occhio il progresso? `COLORIZE_STEP_LOGS=true` (nuovo flag accanto a `USE_COLOR`) colora di blu tutte le righe “Step N/7: …” quando l’output supporta i colori.
+> - 🎨 Vuoi evidenziare a colpo d'occhio il progresso? `COLORIZE_STEP_LOGS=true` (nuovo flag accanto a `USE_COLOR`) colora di blu tutte le righe "Step N/8: …" quando l'output supporta i colori.
 - 🔑 Archive encryption: `ENCRYPT_ARCHIVE=true` usa `filippo.io/age` in streaming per cifrare subito il tar/tar.xz (`*.age`) tramite uno o più recipient AGE (`AGE_RECIPIENT` / `AGE_RECIPIENT_FILE`). I meta restano in chiaro per i pre‑check e il wizard interattivo crea il file dei recipient se mancano.
 
 #### Cifratura archivio (streaming + AGE keypair)
