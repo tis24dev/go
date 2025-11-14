@@ -3,6 +3,8 @@ package main
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -1475,6 +1477,7 @@ func sanitizeEnvValue(value string) string {
 
 func buildSignature() string {
 	now := time.Now().Format(time.RFC3339)
+	hash := executableHash()
 	if info, ok := debug.ReadBuildInfo(); ok {
 		var revision, vcsTime string
 		modified := ""
@@ -1496,11 +1499,42 @@ func buildSignature() string {
 				shortRev = shortRev[:9]
 			}
 			if shortRev != "" {
-				return fmt.Sprintf("%s%s (%s)", shortRev, modified, now)
+				sig := fmt.Sprintf("%s%s (%s)", shortRev, modified, now)
+				if hash != "" {
+					sig = fmt.Sprintf("%s hash=%s", sig, truncateHash(hash))
+				}
+				return sig
 			}
 		}
 	}
+	if hash != "" {
+		return fmt.Sprintf("%s hash=%s", now, truncateHash(hash))
+	}
 	return now
+}
+
+func executableHash() string {
+	exePath, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	f, err := os.Open(exePath)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return ""
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+func truncateHash(hash string) string {
+	if len(hash) <= 16 {
+		return hash
+	}
+	return hash[:16]
 }
 
 func cleanupAfterRun(logger *logging.Logger) {
