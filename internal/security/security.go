@@ -818,8 +818,30 @@ func (c *Checker) isSafeBracketProcess(name string) bool {
 	if isLegitimateKernelProcess(name) {
 		return true
 	}
+	if c.isSafeKernelProcess(name) {
+		return true
+	}
 	lower := strings.ToLower(name)
 	for _, pattern := range c.cfg.SafeBracketProcesses {
+		pattern = strings.ToLower(strings.TrimSpace(pattern))
+		if pattern == "" {
+			continue
+		}
+		if strings.HasSuffix(pattern, "*") {
+			prefix := strings.TrimSuffix(pattern, "*")
+			if strings.HasPrefix(lower, prefix) {
+				return true
+			}
+		} else if lower == pattern {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *Checker) isSafeKernelProcess(name string) bool {
+	lower := strings.ToLower(name)
+	for _, pattern := range c.cfg.SafeKernelProcesses {
 		pattern = strings.ToLower(strings.TrimSpace(pattern))
 		if pattern == "" {
 			continue

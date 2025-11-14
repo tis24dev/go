@@ -1434,7 +1434,6 @@ func runInitialEncryptionSetup(ctx context.Context, configPath string) error {
 	logger.SetOutput(io.Discard)
 	orch := orchestrator.New(logger, "/opt/proxmox-backup/script", false)
 	orch.SetConfig(cfg)
-	orch.SetForceNewAgeRecipient(true)
 	if err := orch.EnsureAgeRecipientsReady(ctx); err != nil {
 		if errors.Is(err, orchestrator.ErrAgeRecipientSetupAborted) {
 			return fmt.Errorf("encryption setup aborted by user")

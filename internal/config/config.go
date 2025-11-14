@@ -30,6 +30,7 @@ type Config struct {
 	ContinueOnSecurityIssues bool
 	SuspiciousProcesses      []string
 	SafeBracketProcesses     []string
+	SafeKernelProcesses      []string
 
 	// Compression settings
 	CompressionType    types.CompressionType
@@ -363,6 +364,16 @@ func (c *Config) parse() error {
 	c.SafeBracketProcesses = c.getStringSlice("SAFE_BRACKET_PROCESSES", []string{
 		"sshd:", "systemd", "cron", "rsyslogd", "dbus-daemon",
 		"zvol_tq*", "arc_*", "dbu_*", "dbuf_*", "l2arc_feed", "lockd", "nfsd*", "nfsv4 callback*",
+	})
+	c.SafeKernelProcesses = c.getStringSlice("SAFE_KERNEL_PROCESSES", []string{
+		"ksgxd",
+		"hwrng",
+		"usb-storage",
+		"vdev_autotrim",
+		"card1-crtc0",
+		"card1-crtc1",
+		"card1-crtc2",
+		"kvm-pit*",
 	})
 
 	c.EncryptArchive = c.getBool("ENCRYPT_ARCHIVE", false)

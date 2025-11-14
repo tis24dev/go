@@ -151,6 +151,10 @@ BACKUP_BLACKLIST=/var/data/tmp
 		t.Error("Expected SafeBracketProcesses to have default values")
 	}
 
+	if len(cfg.SafeKernelProcesses) == 0 {
+		t.Error("Expected SafeKernelProcesses to have default values")
+	}
+
 	if cfg.EncryptArchive {
 		t.Error("Expected EncryptArchive to be false by default")
 	}
