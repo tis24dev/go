@@ -105,6 +105,10 @@ func (l *Logger) GetLevel() types.LogLevel {
 
 // log è il metodo interno per scrivere i log
 func (l *Logger) log(level types.LogLevel, format string, args ...interface{}) {
+	l.logWithLabel(level, "", "", format, args...)
+}
+
+func (l *Logger) logWithLabel(level types.LogLevel, label string, colorOverride string, format string, args ...interface{}) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if level > l.level {
@@ -113,6 +117,9 @@ func (l *Logger) log(level types.LogLevel, format string, args ...interface{}) {
 
 	timestamp := time.Now().Format(l.timeFormat)
 	levelStr := level.String()
+	if label != "" {
+		levelStr = label
+	}
 	message := fmt.Sprintf(format, args...)
 
 	var colorCode string
@@ -120,17 +127,21 @@ func (l *Logger) log(level types.LogLevel, format string, args ...interface{}) {
 
 	if l.useColor {
 		resetCode = "\033[0m"
-		switch level {
-		case types.LogLevelDebug:
-			colorCode = "\033[36m" // Cyan
-		case types.LogLevelInfo:
-			colorCode = "\033[32m" // Green
-		case types.LogLevelWarning:
-			colorCode = "\033[33m" // Yellow
-		case types.LogLevelError:
-			colorCode = "\033[31m" // Red
-		case types.LogLevelCritical:
-			colorCode = "\033[1;31m" // Bold Red
+		if colorOverride != "" {
+			colorCode = colorOverride
+		} else {
+			switch level {
+			case types.LogLevelDebug:
+				colorCode = "\033[36m" // Cyan
+			case types.LogLevelInfo:
+				colorCode = "\033[32m" // Green
+			case types.LogLevelWarning:
+				colorCode = "\033[33m" // Yellow
+			case types.LogLevelError:
+				colorCode = "\033[31m" // Red
+			case types.LogLevelCritical:
+				colorCode = "\033[1;31m" // Bold Red
+			}
 		}
 	}
 
@@ -167,6 +178,30 @@ func (l *Logger) Debug(format string, args ...interface{}) {
 // Info scrive un log informativo
 func (l *Logger) Info(format string, args ...interface{}) {
 	l.log(types.LogLevelInfo, format, args...)
+}
+
+// Phase scrive un log informativo con etichetta PHASE
+func (l *Logger) Phase(format string, args ...interface{}) {
+	if l == nil {
+		return
+	}
+	colorOverride := ""
+	if l.useColor {
+		colorOverride = "\033[34m"
+	}
+	l.logWithLabel(types.LogLevelInfo, "PHASE", colorOverride, format, args...)
+}
+
+// Step scrive un log informativo con etichetta STEP (per evidenziare attività sequenziali)
+func (l *Logger) Step(format string, args ...interface{}) {
+	if l == nil {
+		return
+	}
+	colorOverride := ""
+	if l.useColor {
+		colorOverride = "\033[34m"
+	}
+	l.logWithLabel(types.LogLevelInfo, "STEP", colorOverride, format, args...)
 }
 
 // Warning scrive un log di warning
@@ -217,6 +252,11 @@ func Debug(format string, args ...interface{}) {
 // Info scrive un log informativo usando il logger di default
 func Info(format string, args ...interface{}) {
 	defaultLogger.Info(format, args...)
+}
+
+// Step scrive un log STEP usando il logger di default
+func Step(format string, args ...interface{}) {
+	defaultLogger.Step(format, args...)
 }
 
 // Warning scrive un log di warning usando il logger di default

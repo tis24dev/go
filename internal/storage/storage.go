@@ -90,8 +90,9 @@ type Storage interface {
 	Delete(ctx context.Context, backupFile string) error
 
 	// ApplyRetention removes old backups according to retention policy
-	// For cloud storage, this uses batched deletion (20 files per batch)
-	ApplyRetention(ctx context.Context, maxBackups int) (int, error)
+	// Supports both simple (count-based) and GFS (time-distributed) policies
+	// For cloud storage, uses batched deletion to avoid API rate limits
+	ApplyRetention(ctx context.Context, config RetentionConfig) (int, error)
 
 	// VerifyUpload verifies that a file was successfully uploaded (cloud only)
 	VerifyUpload(ctx context.Context, localFile, remoteFile string) (bool, error)

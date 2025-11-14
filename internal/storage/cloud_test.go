@@ -165,7 +165,8 @@ func TestCloudStorageApplyRetentionDeletesOldest(t *testing.T) {
 	}
 	cs.execCommand = queue.exec
 
-	deleted, err := cs.ApplyRetention(context.Background(), 2)
+	retentionCfg := RetentionConfig{Policy: "simple", MaxBackups: 2}
+	deleted, err := cs.ApplyRetention(context.Background(), retentionCfg)
 	if err != nil {
 		t.Fatalf("ApplyRetention() error = %v", err)
 	}

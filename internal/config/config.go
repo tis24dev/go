@@ -88,6 +88,13 @@ type Config struct {
 	MaxSecondaryBackups    int
 	MaxCloudBackups        int
 
+	// GFS (Grandfather-Father-Son) retention settings
+	// If ANY of these is > 0, GFS retention is enabled (overrides simple retention)
+	RetentionDaily   int // Keep backups from last N days (0 = disabled)
+	RetentionWeekly  int // Keep N weekly backups, one per week (0 = disabled)
+	RetentionMonthly int // Keep N monthly backups, one per month (0 = disabled)
+	RetentionYearly  int // Keep N yearly backups, one per year (0 = keep all yearly)
+
 	// Batch deletion settings (cloud storage)
 	CloudBatchSize  int // Number of files to delete per batch (default: 20)
 	CloudBatchPause int // Pause in seconds between batches (default: 1)
@@ -269,12 +276,56 @@ func LoadConfig(configPath string) (*Config, error) {
 		return nil, fmt.Errorf("error reading config file: %w", err)
 	}
 
+	// Override with environment variables (env vars take precedence over file)
+	cfg.loadEnvOverrides()
+
 	// Parse configuration
 	if err := cfg.parse(); err != nil {
 		return nil, fmt.Errorf("error parsing configuration: %w", err)
 	}
 
 	return cfg, nil
+}
+
+// loadEnvOverrides checks for environment variables and overrides config file values
+// This allows environment variables to take precedence over file configuration
+func (c *Config) loadEnvOverrides() {
+	// List of all configuration keys that can be overridden by environment variables
+	envKeys := []string{
+		"BACKUP_ENABLED", "DRY_RUN", "DEBUG_LEVEL", "USE_COLOR", "COLORIZE_STEP_LOGS",
+		"COMPRESSION_TYPE", "COMPRESSION_LEVEL", "COMPRESSION_THREADS", "COMPRESSION_MODE",
+		"ENABLE_SMART_CHUNKING", "ENABLE_DEDUPLICATION", "ENABLE_PREFILTER",
+		"CHUNK_SIZE_MB", "CHUNK_THRESHOLD_MB", "PREFILTER_MAX_FILE_SIZE_MB",
+		"BACKUP_PATH", "LOG_PATH", "LOCK_PATH", "SECURE_ACCOUNT",
+		"SECONDARY_ENABLED", "SECONDARY_PATH", "SECONDARY_LOG_PATH",
+		"CLOUD_ENABLED", "CLOUD_REMOTE", "CLOUD_REMOTE_PATH", "CLOUD_LOG_PATH",
+		"CLOUD_UPLOAD_MODE", "CLOUD_PARALLEL_MAX_JOBS", "CLOUD_PARALLEL_VERIFICATION",
+		"RCLONE_TIMEOUT_CONNECTION", "RCLONE_TIMEOUT_OPERATION",
+		"RCLONE_BANDWIDTH_LIMIT", "RCLONE_TRANSFERS", "RCLONE_RETRIES", "RCLONE_VERIFY_METHOD",
+		"CLOUD_BATCH_SIZE", "CLOUD_BATCH_PAUSE",
+		"MAX_LOCAL_BACKUPS", "MAX_SECONDARY_BACKUPS", "MAX_CLOUD_BACKUPS",
+		"RETENTION_DAILY", "RETENTION_WEEKLY", "RETENTION_MONTHLY", "RETENTION_YEARLY",
+		"BUNDLE_ASSOCIATED_FILES", "ENCRYPT_ARCHIVE", "AGE_RECIPIENT", "AGE_RECIPIENT_FILE",
+		"TELEGRAM_ENABLED", "BOT_TELEGRAM_TYPE", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID",
+		"EMAIL_ENABLED", "EMAIL_DELIVERY_METHOD", "EMAIL_FALLBACK_SENDMAIL",
+		"EMAIL_RECIPIENT", "EMAIL_FROM",
+		"WEBHOOK_ENABLED", "WEBHOOK_ENDPOINTS", "WEBHOOK_FORMAT", "WEBHOOK_TIMEOUT",
+		"WEBHOOK_MAX_RETRIES", "WEBHOOK_RETRY_DELAY",
+		"METRICS_ENABLED", "METRICS_PATH",
+		"SECURITY_CHECK_ENABLED", "AUTO_UPDATE_HASHES", "AUTO_FIX_PERMISSIONS",
+		"CONTINUE_ON_SECURITY_ISSUES", "CHECK_NETWORK_SECURITY", "CHECK_FIREWALL",
+		"CHECK_OPEN_PORTS", "SUSPICIOUS_PORTS", "PORT_WHITELIST",
+		"SUSPICIOUS_PROCESSES", "SAFE_BRACKET_PROCESSES", "SAFE_KERNEL_PROCESSES",
+		"MIN_DISK_SPACE_PRIMARY_GB", "MIN_DISK_SPACE_SECONDARY_GB", "MIN_DISK_SPACE_CLOUD_GB",
+		"DISABLE_NETWORK_PREFLIGHT", "BACKUP_EXCLUDE_PATTERNS",
+		"SKIP_PERMISSION_CHECK",
+	}
+
+	for _, key := range envKeys {
+		if envValue := os.Getenv(key); envValue != "" {
+			c.raw[key] = envValue
+		}
+	}
 }
 
 // parse interpreta i valori raw della configurazione
@@ -425,6 +476,13 @@ func (c *Config) parse() error {
 	c.MaxLocalBackups = c.LocalRetentionDays
 	c.MaxSecondaryBackups = c.SecondaryRetentionDays
 	c.MaxCloudBackups = c.CloudRetentionDays
+
+	// GFS (Grandfather-Father-Son) retention policy
+	// If ANY of these is specified (> 0), GFS mode is enabled (overrides simple retention)
+	c.RetentionDaily = c.getInt("RETENTION_DAILY", 0)
+	c.RetentionWeekly = c.getInt("RETENTION_WEEKLY", 0)
+	c.RetentionMonthly = c.getInt("RETENTION_MONTHLY", 0)
+	c.RetentionYearly = c.getInt("RETENTION_YEARLY", 0)
 
 	// Batch deletion settings for cloud storage (avoid API rate limits)
 	c.CloudBatchSize = c.getInt("CLOUD_BATCH_SIZE", 20)
@@ -1053,6 +1111,28 @@ func autoDetectPBSToken(secureAccountPath string) (token, secret string) {
 	}
 
 	return "", ""
+}
+
+// IsGFSRetentionEnabled returns true if GFS retention policy is configured
+// GFS is enabled if ANY of the GFS retention parameters is explicitly set
+// Note: We check if any value was actually configured, not just > 0
+func (c *Config) IsGFSRetentionEnabled() bool {
+	// Check if any GFS variable was explicitly set in config
+	_, hasDaily := c.raw["RETENTION_DAILY"]
+	_, hasWeekly := c.raw["RETENTION_WEEKLY"]
+	_, hasMonthly := c.raw["RETENTION_MONTHLY"]
+	_, hasYearly := c.raw["RETENTION_YEARLY"]
+
+	return hasDaily || hasWeekly || hasMonthly || hasYearly
+}
+
+// GetRetentionPolicy returns the active retention policy type
+// Returns "gfs" if GFS retention is enabled, "simple" otherwise
+func (c *Config) GetRetentionPolicy() string {
+	if c.IsGFSRetentionEnabled() {
+		return "gfs"
+	}
+	return "simple"
 }
 
 // expandEnvVars expands environment variables and special variables like ${BASE_DIR}

@@ -330,6 +330,49 @@ CLOUD_REMOTE=rclone-remote:pbs-backups
 MAX_CLOUD_BACKUPS=30
 ```
 
+**Retention Policies:**
+
+The Go implementation supports two intelligent retention strategies:
+
+**1. Simple Retention (Count-based) - Default**
+```bash
+# Keep N most recent backups per destination
+MAX_LOCAL_BACKUPS=15
+MAX_SECONDARY_BACKUPS=15
+MAX_CLOUD_BACKUPS=15
+```
+
+**2. GFS Retention (Grandfather-Father-Son) - Time-distributed**
+```bash
+# Automatically enabled when RETENTION_* variables are set
+# Distributes backups across time periods for better historical coverage
+
+RETENTION_DAILY=7        # Keep last 7 days of backups
+RETENTION_WEEKLY=4       # Keep 4 weekly backups (1 per ISO week)
+RETENTION_MONTHLY=12     # Keep 12 monthly backups (1 per month)
+RETENTION_YEARLY=3       # Keep 3 yearly backups (1 per year)
+```
+
+**GFS Features:**
+- ✅ **Automatic classification**: Backups are categorized as daily/weekly/monthly/yearly
+- ✅ **ISO week numbering**: Weekly backups use standard ISO 8601 week numbers
+- ✅ **Intelligent deletion**: Preserves time-distributed backups automatically
+- ✅ **Per-destination control**: Different policies for local, secondary, and cloud
+- ✅ **Predictive logging**: Shows what will be deleted before deletion
+
+**Example GFS output:**
+```
+Local storage initialized (present 25 backups)
+  Policy: GFS (daily=7, weekly=4, monthly=12, yearly=3)
+  Total: 25/-
+  Daily: 7/7
+  Weekly: 4/4
+  Monthly: 12/12
+  Yearly: 2/3
+
+GFS classification → daily: 7/7, weekly: 4/4, monthly: 12/12, yearly: 2/3, to_delete: 0
+```
+
 Secondary storage copies are executed directly in Go (atomic copy + fsync + rename), so no rsync dependency or extra tuning flags are required. Cancellation/timeout is inherited from the main context, and detailed progress is logged at DEBUG level.
 
 **Rclone Settings (for cloud storage):**

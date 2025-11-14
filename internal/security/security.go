@@ -118,7 +118,7 @@ func Run(ctx context.Context, logger *logging.Logger, cfg *config.Config, config
 		lookPath:   exec.LookPath,
 	}
 
-	logger.Info("Running security preflight checks...")
+	logger.Step("Security preflight checks")
 	logger.Debug("Security options: auto_fix=%v, auto_update_hashes=%v, continue_on_issues=%v, check_network=%v, firewall=%v, open_ports=%v, suspicious_processes=%d, safe_bracket=%d",
 		cfg.AutoFixPermissions, cfg.AutoUpdateHashes, cfg.ContinueOnSecurityIssues, cfg.CheckNetworkSecurity, cfg.CheckFirewall, cfg.CheckOpenPorts,
 		len(cfg.SuspiciousProcesses), len(cfg.SafeBracketProcesses))

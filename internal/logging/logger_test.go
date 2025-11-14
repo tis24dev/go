@@ -92,6 +92,23 @@ func TestLogFormatting(t *testing.T) {
 	}
 }
 
+func TestPhaseLogging(t *testing.T) {
+	var buf bytes.Buffer
+	logger := New(types.LogLevelInfo, false)
+	logger.SetOutput(&buf)
+
+	logger.Phase("Phase message")
+
+	output := buf.String()
+
+	if !strings.Contains(output, "PHASE") {
+		t.Error("Output should contain level PHASE")
+	}
+	if !strings.Contains(output, "Phase message") {
+		t.Error("Output should contain the phase message")
+	}
+}
+
 func TestLogWithFormatting(t *testing.T) {
 	var buf bytes.Buffer
 	logger := New(types.LogLevelInfo, false)

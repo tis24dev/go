@@ -50,6 +50,45 @@ make help
 
 ---
 
+## Key Features
+
+### Intelligent Backup Retention
+
+The Go version supports two retention strategies:
+
+**1. Simple Retention (Default)**
+- Count-based: keeps N most recent backups
+- Automatic deletion of oldest backups when limit is exceeded
+- Per-destination limits: local, secondary, cloud
+
+**2. GFS Retention (Grandfather-Father-Son)**
+- Time-distributed backup strategy
+- Automatic classification into categories:
+  - **Daily**: Last N days of backups (most recent)
+  - **Weekly**: N weekly backups (1 per ISO week)
+  - **Monthly**: N monthly backups (1 per month)
+  - **Yearly**: N yearly backups (1 per year)
+- Intelligent deletion with category-based logic
+- Preserves historical coverage while managing storage efficiently
+- Enabled automatically when `RETENTION_*` variables are set
+
+```bash
+# Example GFS configuration
+RETENTION_DAILY=7        # Keep last 7 days
+RETENTION_WEEKLY=4       # Keep 4 weekly backups
+RETENTION_MONTHLY=12     # Keep 12 monthly backups
+RETENTION_YEARLY=3       # Keep 3 yearly backups
+```
+
+**Benefits of GFS:**
+- Better historical coverage than simple count-based
+- Automatic time-distributed retention
+- Configurable per storage destination
+- ISO week numbering for weekly backups
+- Predictive logging (shows what will be deleted before deletion)
+
+---
+
 ## Completed Tasks (Phase 0)
 
 - ✅ Go 1.25+ installed

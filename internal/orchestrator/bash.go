@@ -327,10 +327,7 @@ func (o *Orchestrator) logStep(step int, format string, args ...interface{}) {
 	if len(args) > 0 {
 		message = fmt.Sprintf(format, args...)
 	}
-	if o.cfg != nil && o.cfg.ColorizeStepLogs && o.logger.UsesColor() {
-		message = fmt.Sprintf("\033[34m%s\033[0m", message)
-	}
-	o.logger.Info("Step %d/%d: %s", step, backupTotalSteps, message)
+	o.logger.Step("%s", message)
 }
 
 func (o *Orchestrator) SetForceNewAgeRecipient(force bool) {
@@ -429,7 +426,7 @@ func (o *Orchestrator) RunPreBackupChecks(ctx context.Context) error {
 		return nil
 	}
 
-	o.logger.Info("Running pre-backup validation checks...")
+	o.logger.Step("Pre-backup validation checks")
 
 	results, err := o.checker.RunAllChecks(ctx)
 
@@ -504,7 +501,7 @@ func (o *Orchestrator) ensureTempRegistry() *TempDirRegistry {
 }
 
 // RunGoBackup performs the entire backup using Go components (collector + archiver)
-func (o *Orchestrator) RunGoBackup(ctx context.Context, pType types.ProxmoxType, hostname string) (*BackupStats, error) {
+func (o *Orchestrator) RunGoBackup(ctx context.Context, pType types.ProxmoxType, hostname string) (stats *BackupStats, err error) {
 	o.logger.Info("Starting Go-based backup orchestration for %s", pType)
 
 	// Unified cleanup of previous execution artifacts
@@ -519,7 +516,7 @@ func (o *Orchestrator) RunGoBackup(ctx context.Context, pType types.ProxmoxType,
 
 	fmt.Println()
 	o.logStep(1, "Initializing backup statistics and temporary workspace")
-	stats := &BackupStats{
+	stats = &BackupStats{
 		Hostname:                 hostname,
 		ProxmoxType:              pType,
 		ProxmoxVersion:           o.proxmoxVersion,
@@ -574,7 +571,12 @@ func (o *Orchestrator) RunGoBackup(ctx context.Context, pType types.ProxmoxType,
 			}
 			return
 		}
-		o.logger.Info("Temporary workspace preserved at %s (will be removed at the next startup)", tempDir)
+		msg := fmt.Sprintf("Temporary workspace preserved at %s (will be removed at the next startup)", tempDir)
+		if err != nil {
+			o.logger.Warning("%s", msg)
+		} else {
+			o.logger.Debug("%s", msg)
+		}
 	}()
 
 	// Create marker file for parity with Bash cleanup guarantees
@@ -676,7 +678,8 @@ func (o *Orchestrator) RunGoBackup(ctx context.Context, pType types.ProxmoxType,
 	}
 
 	if o.optimizationCfg.Enabled() {
-		o.logger.Info("Running backup optimizations on collected data...")
+		fmt.Println()
+		o.logger.Step("Backup optimizations on collected data")
 		if err := backup.ApplyOptimizations(ctx, o.logger, tempDir, o.optimizationCfg); err != nil {
 			o.logger.Warning("Backup optimizations completed with warnings: %v", err)
 		}

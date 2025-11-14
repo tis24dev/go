@@ -278,18 +278,14 @@ func (l *LocalStorage) Delete(ctx context.Context, backupFile string) error {
 }
 
 // ApplyRetention removes old backups according to retention policy
-func (l *LocalStorage) ApplyRetention(ctx context.Context, maxBackups int) (int, error) {
+// Supports both simple (count-based) and GFS (time-distributed) policies
+func (l *LocalStorage) ApplyRetention(ctx context.Context, config RetentionConfig) (int, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}
 
-	if maxBackups <= 0 {
-		l.logger.Debug("Retention disabled for local storage (maxBackups = %d)", maxBackups)
-		return 0, nil
-	}
-
 	// List all backups
-	l.logger.Debug("Local storage: listing backups prior to retention (limit=%d)", maxBackups)
+	l.logger.Debug("Local storage: listing backups for retention policy '%s'", config.Policy)
 	backups, err := l.List(ctx)
 	if err != nil {
 		return 0, &StorageError{
@@ -301,6 +297,71 @@ func (l *LocalStorage) ApplyRetention(ctx context.Context, maxBackups int) (int,
 		}
 	}
 
+	if len(backups) == 0 {
+		l.logger.Debug("Local storage: no backups to apply retention")
+		return 0, nil
+	}
+
+	// Apply appropriate retention policy
+	if config.Policy == "gfs" {
+		return l.applyGFSRetention(ctx, backups, config)
+	}
+	return l.applySimpleRetention(ctx, backups, config.MaxBackups)
+}
+
+// applyGFSRetention applies GFS (Grandfather-Father-Son) retention policy
+func (l *LocalStorage) applyGFSRetention(ctx context.Context, backups []*types.BackupMetadata, config RetentionConfig) (int, error) {
+	l.logger.Info("Applying GFS retention policy (daily=%d, weekly=%d, monthly=%d, yearly=%d)",
+		config.Daily, config.Weekly, config.Monthly, config.Yearly)
+
+	// Classify backups according to GFS scheme
+	classification := ClassifyBackupsGFS(backups, config)
+
+	// Get statistics
+	stats := GetRetentionStats(classification)
+	l.logger.Info("GFS classification → daily: %d/%d, weekly: %d/%d, monthly: %d/%d, yearly: %d/%d, to_delete: %d",
+		stats[CategoryDaily], config.Daily,
+		stats[CategoryWeekly], config.Weekly,
+		stats[CategoryMonthly], config.Monthly,
+		stats[CategoryYearly], config.Yearly,
+		stats[CategoryDelete])
+
+	// Delete backups marked for deletion
+	deleted := 0
+	for backup, category := range classification {
+		if category != CategoryDelete {
+			continue
+		}
+
+		if err := ctx.Err(); err != nil {
+			return deleted, err
+		}
+
+		l.logger.Debug("Deleting old backup: %s (created: %s)",
+			filepath.Base(backup.BackupFile),
+			backup.Timestamp.Format("2006-01-02 15:04:05"))
+
+		if err := l.Delete(ctx, backup.BackupFile); err != nil {
+			l.logger.Warning("Failed to delete %s: %v", backup.BackupFile, err)
+			continue
+		}
+
+		deleted++
+	}
+
+	remaining := len(backups) - deleted
+	l.logger.Info("Local storage retention applied: deleted %d backups, %d remaining", deleted, remaining)
+
+	return deleted, nil
+}
+
+// applySimpleRetention applies simple count-based retention policy
+func (l *LocalStorage) applySimpleRetention(ctx context.Context, backups []*types.BackupMetadata, maxBackups int) (int, error) {
+	if maxBackups <= 0 {
+		l.logger.Debug("Retention disabled for local storage (maxBackups = %d)", maxBackups)
+		return 0, nil
+	}
+
 	totalBackups := len(backups)
 	if totalBackups <= maxBackups {
 		l.logger.Debug("Local storage: %d backups (within retention limit of %d)", totalBackups, maxBackups)
@@ -309,7 +370,9 @@ func (l *LocalStorage) ApplyRetention(ctx context.Context, maxBackups int) (int,
 
 	// Calculate how many to delete
 	toDelete := totalBackups - maxBackups
-	l.logger.Info("Local storage: %d backups found, retention limit is %d, deleting %d oldest backups",
+	l.logger.Info("Applying simple retention policy: %d backups found, limit is %d, deleting %d oldest",
+		totalBackups, maxBackups, toDelete)
+	l.logger.Info("Simple retention → current: %d, limit: %d, to_delete: %d",
 		totalBackups, maxBackups, toDelete)
 
 	// Delete oldest backups (already sorted newest first)
@@ -322,8 +385,7 @@ func (l *LocalStorage) ApplyRetention(ctx context.Context, maxBackups int) (int,
 		backup := backups[i]
 		l.logger.Debug("Deleting old backup: %s (created: %s)",
 			filepath.Base(backup.BackupFile),
-			backup.Timestamp.Format("2006-01-02 15:04:05"),
-		)
+			backup.Timestamp.Format("2006-01-02 15:04:05"))
 
 		if err := l.Delete(ctx, backup.BackupFile); err != nil {
 			l.logger.Warning("Failed to delete %s: %v", backup.BackupFile, err)
@@ -334,14 +396,7 @@ func (l *LocalStorage) ApplyRetention(ctx context.Context, maxBackups int) (int,
 	}
 
 	remaining := totalBackups - deleted
-	if recount, err := l.List(ctx); err == nil {
-		remaining = len(recount)
-	} else {
-		l.logger.Debug("Local storage: failed to recount backups after retention: %v", err)
-	}
-
-	l.logger.Debug("Local storage retention applied: deleted %d old backups, %d remaining",
-		deleted, remaining)
+	l.logger.Debug("Local storage retention applied: deleted %d backups, %d remaining", deleted, remaining)
 
 	return deleted, nil
 }

@@ -132,7 +132,8 @@ func TestLocalStorageApplyRetentionDeletesOldBackups(t *testing.T) {
 		metas = append(metas, backupMeta{path: name, mod: mod})
 	}
 
-	deleted, err := local.ApplyRetention(context.Background(), 2)
+	retentionCfg := RetentionConfig{Policy: "simple", MaxBackups: 2}
+	deleted, err := local.ApplyRetention(context.Background(), retentionCfg)
 	if err != nil {
 		t.Fatalf("ApplyRetention() error = %v", err)
 	}

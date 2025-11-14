@@ -152,52 +152,73 @@ func (o *Orchestrator) rotateLogFiles(ctx context.Context) error {
 		return nil
 	}
 
-	o.logger.Info("Rotating log files...")
+	o.logger.Step("Log retention policy")
 
 	// Rotate local logs (use same retention as backups)
-	if err := o.rotateLogsInPath(o.cfg.LogPath, o.cfg.MaxLocalBackups); err != nil {
-		o.logger.Warning("Failed to rotate local logs: %v", err)
-	} else {
-		o.logger.Debug("✓ Local logs rotated (max: %d)", o.cfg.MaxLocalBackups)
+	if o.logLogRetentionIntro("Local", o.cfg.MaxLocalBackups, o.cfg.LogPath) {
+		if _, _, err := o.rotateLogsInPath("Local", o.cfg.LogPath, o.cfg.MaxLocalBackups); err != nil {
+			o.logger.Warning("Failed to rotate local logs: %v", err)
+		}
 	}
 
 	// Rotate secondary logs (use same retention as backups)
 	if o.cfg.SecondaryEnabled && o.cfg.SecondaryLogPath != "" {
-		if err := o.rotateLogsInPath(o.cfg.SecondaryLogPath, o.cfg.MaxSecondaryBackups); err != nil {
-			o.logger.Warning("Failed to rotate secondary logs: %v", err)
-		} else {
-			o.logger.Debug("✓ Secondary logs rotated (max: %d)", o.cfg.MaxSecondaryBackups)
+		if o.logLogRetentionIntro("Secondary", o.cfg.MaxSecondaryBackups, o.cfg.SecondaryLogPath) {
+			if _, _, err := o.rotateLogsInPath("Secondary", o.cfg.SecondaryLogPath, o.cfg.MaxSecondaryBackups); err != nil {
+				o.logger.Warning("Failed to rotate secondary logs: %v", err)
+			}
 		}
+	} else {
+		o.logger.Info("Secondary logs: disabled")
 	}
 
 	// Rotate cloud logs (use same retention as backups)
 	if o.cfg.CloudEnabled && o.cfg.CloudLogPath != "" {
-		if err := o.rotateCloudLogs(ctx, o.cfg.CloudLogPath, o.cfg.MaxCloudBackups); err != nil {
-			o.logger.Warning("Failed to rotate cloud logs: %v", err)
-		} else {
-			o.logger.Debug("✓ Cloud logs rotated (max: %d)", o.cfg.MaxCloudBackups)
+		if o.logLogRetentionIntro("Cloud", o.cfg.MaxCloudBackups, o.cfg.CloudLogPath) {
+			if _, err := o.rotateCloudLogs(ctx, "Cloud", o.cfg.CloudLogPath, o.cfg.MaxCloudBackups); err != nil {
+				o.logger.Warning("Failed to rotate cloud logs: %v", err)
+			}
 		}
+	} else {
+		o.logger.Info("Cloud logs: disabled")
 	}
 
 	return nil
 }
 
-// rotateLogsInPath removes old log files in a local directory
-func (o *Orchestrator) rotateLogsInPath(logPath string, maxLogs int) error {
-	if maxLogs <= 0 {
-		return nil
+func (o *Orchestrator) logLogRetentionIntro(label string, keep int, path string) bool {
+	if keep <= 0 {
+		o.logger.Info("%s logs: retention disabled (keep=%d)", label, keep)
+		return false
 	}
+	o.logger.Info("%s logs: applying retention policy...", label)
+	o.logger.Info("  Policy: simple (keep %d newest)", keep)
+	if trimmed := strings.TrimSpace(path); trimmed != "" {
+		o.logger.Debug("%s logs: target path %s", label, trimmed)
+	}
+	return true
+}
+
+// rotateLogsInPath removes old log files in a local directory
+func (o *Orchestrator) rotateLogsInPath(label, logPath string, maxLogs int) (removed int, total int, err error) {
+	if maxLogs <= 0 {
+		return 0, -1, nil
+	}
+
+	o.logger.Debug("%s logs: evaluating retention (keep=%d, path=%s)", label, maxLogs, logPath)
 
 	// Find all log files
 	pattern := filepath.Join(logPath, "backup-*.log")
 	matches, err := filepath.Glob(pattern)
 	if err != nil {
-		return fmt.Errorf("glob failed: %w", err)
+		return 0, 0, fmt.Errorf("glob failed: %w", err)
 	}
+	total = len(matches)
+	o.logger.Debug("%s logs: current logs detected: %d", label, total)
 
 	if len(matches) <= maxLogs {
-		o.logger.Debug("Log rotation not needed: %d logs <= %d max", len(matches), maxLogs)
-		return nil
+		o.logger.Debug("%s logs: %d logs (within retention limit of %d)", label, len(matches), maxLogs)
+		return 0, total, nil
 	}
 
 	// Sort by modification time (oldest first)
@@ -210,25 +231,35 @@ func (o *Orchestrator) rotateLogsInPath(logPath string, maxLogs int) error {
 		return infoI.ModTime().Before(infoJ.ModTime())
 	})
 
-	// Remove oldest logs
 	toRemove := len(matches) - maxLogs
+	o.logger.Info("%s logs: simple retention → current=%d, limit=%d, to_delete=%d", label, len(matches), maxLogs, toRemove)
+	o.logger.Info("%s logs: deleting %d oldest log(s)", label, toRemove)
+
+	// Remove oldest logs
 	for i := 0; i < toRemove; i++ {
 		logFile := matches[i]
-		o.logger.Debug("Removing old log: %s", filepath.Base(logFile))
+		o.logger.Debug("%s logs: deleting log %s", label, filepath.Base(logFile))
 		if err := os.Remove(logFile); err != nil {
 			o.logger.Warning("Failed to remove %s: %v", filepath.Base(logFile), err)
+			continue
 		}
+		removed++
 	}
 
-	o.logger.Info("Removed %d old log file(s) from %s", toRemove, logPath)
-	return nil
+	if removed > 0 {
+		remaining := len(matches) - removed
+		o.logger.Info("✓ %s logs: deleted %d old log(s), %d remaining", label, removed, remaining)
+	}
+	return removed, total, nil
 }
 
 // rotateCloudLogs removes old log files from cloud storage
-func (o *Orchestrator) rotateCloudLogs(ctx context.Context, cloudLogPath string, maxLogs int) error {
+func (o *Orchestrator) rotateCloudLogs(ctx context.Context, label, cloudLogPath string, maxLogs int) (int, error) {
 	if maxLogs <= 0 {
-		return nil
+		return 0, nil
 	}
+
+	o.logger.Debug("%s logs: fetching cloud listing (keep=%d, path=%s)", label, maxLogs, cloudLogPath)
 
 	// List log files in cloud storage
 	args := []string{
@@ -241,7 +272,7 @@ func (o *Orchestrator) rotateCloudLogs(ctx context.Context, cloudLogPath string,
 	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("rclone lsf failed: %w (output: %s)", err, output)
+		return 0, fmt.Errorf("rclone lsf failed: %w (output: %s)", err, output)
 	}
 
 	lines := strings.Split(string(output), "\n")
@@ -281,8 +312,8 @@ func (o *Orchestrator) rotateCloudLogs(ctx context.Context, cloudLogPath string,
 	}
 
 	if len(logFiles) <= maxLogs {
-		o.logger.Debug("Cloud log rotation not needed: %d logs <= %d max", len(logFiles), maxLogs)
-		return nil
+		o.logger.Debug("%s logs: %d logs (within retention limit of %d)", label, len(logFiles), maxLogs)
+		return 0, nil
 	}
 
 	// Sort by modification time (oldest first)
@@ -292,20 +323,28 @@ func (o *Orchestrator) rotateCloudLogs(ctx context.Context, cloudLogPath string,
 
 	// Remove oldest logs
 	toRemove := len(logFiles) - maxLogs
+	o.logger.Info("%s logs: simple retention → current=%d, limit=%d, to_delete=%d", label, len(logFiles), maxLogs, toRemove)
+	o.logger.Info("%s logs: deleting %d oldest log(s)", label, toRemove)
+	removed := 0
 	for i := 0; i < toRemove; i++ {
 		logFile := logFiles[i].path
 		cloudPath := buildCloudLogDestination(cloudLogPath, logFile)
-		o.logger.Debug("Removing old cloud log: %s", logFile)
+		o.logger.Debug("%s logs: deleting log %s", label, logFile)
 
 		deleteArgs := []string{"rclone", "delete", cloudPath}
 		deleteCmd := exec.CommandContext(ctx, deleteArgs[0], deleteArgs[1:]...)
 		if err := deleteCmd.Run(); err != nil {
 			o.logger.Warning("Failed to remove cloud log %s: %v", logFile, err)
+			continue
 		}
+		removed++
 	}
 
-	o.logger.Info("Removed %d old log file(s) from cloud storage", toRemove)
-	return nil
+	if removed > 0 {
+		remaining := len(logFiles) - removed
+		o.logger.Info("✓ %s logs: deleted %d old log(s), %d remaining", label, removed, remaining)
+	}
+	return removed, nil
 }
 
 func buildCloudLogDestination(basePath, fileName string) string {

@@ -298,6 +298,7 @@ func run() int {
 	if logTelegramInfo {
 		logging.Info("Server Telegram: %s", telegramServerStatus)
 	}
+	fmt.Println()
 
 	execInfo := getExecInfo()
 	execPath := execInfo.ExecPath
@@ -336,7 +337,7 @@ func run() int {
 	}
 
 	// Initialize orchestrator
-	logging.Info("Initializing backup orchestrator...")
+	logging.Step("Initializing backup orchestrator")
 	bashScriptPath := "/opt/proxmox-backup/script"
 	orch := orchestrator.New(logger, bashScriptPath, dryRun)
 	orch.SetForceNewAgeRecipient(args.ForceNewKey)
@@ -388,7 +389,7 @@ func run() int {
 	fmt.Println()
 
 	// Verify directories
-	logging.Info("Verifying directory structure...")
+	logging.Step("Verifying directory structure")
 	checkDir := func(name, path string) {
 		if utils.DirExists(path) {
 			logging.Info("✓ %s exists: %s", name, path)
@@ -456,7 +457,7 @@ func run() int {
 	fmt.Println()
 
 	// Initialize storage backends
-	logging.Info("Initializing storage backends...")
+	logging.Step("Initializing storage backends")
 
 	// Primary (local) storage - always enabled
 	localBackend, err := storage.NewLocalStorage(cfg, logger)
@@ -472,12 +473,13 @@ func run() int {
 	logging.Info("Path Primary: %s", formatDetailedFilesystemLabel(cfg.BackupPath, localFS))
 
 	localStats := fetchStorageStats(ctx, localBackend, logger, "Local storage")
+	localBackups := fetchBackupList(ctx, localBackend)
 
-	localAdapter := orchestrator.NewStorageAdapter(localBackend, logger, cfg.MaxLocalBackups)
+	localAdapter := orchestrator.NewStorageAdapter(localBackend, logger, cfg)
 	localAdapter.SetFilesystemInfo(localFS)
 	localAdapter.SetInitialStats(localStats)
 	orch.RegisterStorageTarget(localAdapter)
-	logging.Info("%s", formatStorageInitSummary("Local storage", cfg.MaxLocalBackups, localStats))
+	logStorageInitSummary(formatStorageInitSummary("Local storage", cfg, storage.LocationPrimary, localStats, localBackups))
 
 	// Secondary storage - optional
 	var secondaryFS *storage.FilesystemInfo
@@ -490,11 +492,12 @@ func run() int {
 			secondaryFS, _ = detectFilesystemInfo(ctx, secondaryBackend, cfg.SecondaryPath, logger)
 			logging.Info("Path Secondary: %s", formatDetailedFilesystemLabel(cfg.SecondaryPath, secondaryFS))
 			secondaryStats := fetchStorageStats(ctx, secondaryBackend, logger, "Secondary storage")
-			secondaryAdapter := orchestrator.NewStorageAdapter(secondaryBackend, logger, cfg.MaxSecondaryBackups)
+			secondaryBackups := fetchBackupList(ctx, secondaryBackend)
+			secondaryAdapter := orchestrator.NewStorageAdapter(secondaryBackend, logger, cfg)
 			secondaryAdapter.SetFilesystemInfo(secondaryFS)
 			secondaryAdapter.SetInitialStats(secondaryStats)
 			orch.RegisterStorageTarget(secondaryAdapter)
-			logging.Info("%s", formatStorageInitSummary("Secondary storage", cfg.MaxSecondaryBackups, secondaryStats))
+			logStorageInitSummary(formatStorageInitSummary("Secondary storage", cfg, storage.LocationSecondary, secondaryStats, secondaryBackups))
 		}
 	} else {
 		logging.Info("Path Secondary: disabled")
@@ -511,18 +514,19 @@ func run() int {
 			cloudFS, _ = detectFilesystemInfo(ctx, cloudBackend, cfg.CloudRemote, logger)
 			logging.Info("Path Cloud: %s", formatDetailedFilesystemLabel(cfg.CloudRemote, cloudFS))
 			cloudStats := fetchStorageStats(ctx, cloudBackend, logger, "Cloud storage")
-			cloudAdapter := orchestrator.NewStorageAdapter(cloudBackend, logger, cfg.MaxCloudBackups)
+			cloudBackups := fetchBackupList(ctx, cloudBackend)
+			cloudAdapter := orchestrator.NewStorageAdapter(cloudBackend, logger, cfg)
 			cloudAdapter.SetFilesystemInfo(cloudFS)
 			cloudAdapter.SetInitialStats(cloudStats)
 			orch.RegisterStorageTarget(cloudAdapter)
-			logging.Info("%s", formatStorageInitSummary("Cloud storage", cfg.MaxCloudBackups, cloudStats))
+			logStorageInitSummary(formatStorageInitSummary("Cloud storage", cfg, storage.LocationCloud, cloudStats, cloudBackups))
 		}
 	} else {
 		logging.Info("Path Cloud: disabled")
 	}
 
 	// Initialize notification channels
-	logging.Info("Initializing notification channels...")
+	logging.Step("Initializing notification channels")
 
 	// Telegram notifications
 	if cfg.TelegramEnabled {
@@ -669,7 +673,7 @@ func run() int {
 			}
 			fmt.Println()
 
-			logging.Info("Starting Go backup orchestration...")
+			logging.Step("Start Go backup orchestration")
 
 			// Get hostname for backup naming
 			hostname := resolveHostname()
@@ -1162,16 +1166,60 @@ func fetchStorageStats(ctx context.Context, backend storage.Storage, logger *log
 	return stats
 }
 
-func formatStorageInitSummary(name string, retention int, stats *storage.StorageStats) string {
-	retentionStr := fmt.Sprintf("retention %s", formatBackupNoun(retention))
+func formatStorageInitSummary(name string, cfg *config.Config, location storage.BackupLocation, stats *storage.StorageStats, backups []*types.BackupMetadata) string {
+	// Build retention config to check policy type
+	retentionConfig := storage.NewRetentionConfigFromConfig(cfg, location)
+
 	if stats == nil {
-		return fmt.Sprintf("✓ %s initialized (%s)", name, retentionStr)
+		// No stats available
+		if retentionConfig.Policy == "gfs" {
+			return fmt.Sprintf("✓ %s initialized (GFS retention: daily=%d, weekly=%d, monthly=%d, yearly=%d)",
+				name, retentionConfig.Daily, retentionConfig.Weekly,
+				retentionConfig.Monthly, retentionConfig.Yearly)
+		}
+		return fmt.Sprintf("✓ %s initialized (retention %s)", name, formatBackupNoun(retentionConfig.MaxBackups))
 	}
-	return fmt.Sprintf("✓ %s initialized (present %s, %s)",
-		name,
-		formatBackupNoun(stats.TotalBackups),
-		retentionStr,
-	)
+
+	// Stats available - show current backup count
+	if retentionConfig.Policy == "gfs" {
+		// GFS mode - show detailed breakdown
+		result := fmt.Sprintf("✓ %s initialized (present %s)", name, formatBackupNoun(stats.TotalBackups))
+
+		// If we have backups, classify them and show stats
+		if stats.TotalBackups > 0 && backups != nil && len(backups) > 0 {
+			classification := storage.ClassifyBackupsGFS(backups, retentionConfig)
+			gfsStats := storage.GetRetentionStats(classification)
+
+			result += fmt.Sprintf("\n  Total: %d/-", stats.TotalBackups)
+			result += fmt.Sprintf("\n  Daily: %d/%d", gfsStats[storage.CategoryDaily], retentionConfig.Daily)
+			result += fmt.Sprintf("\n  Weekly: %d/%d", gfsStats[storage.CategoryWeekly], retentionConfig.Weekly)
+			result += fmt.Sprintf("\n  Monthly: %d/%d", gfsStats[storage.CategoryMonthly], retentionConfig.Monthly)
+			result += fmt.Sprintf("\n  Yearly: %d/%d", gfsStats[storage.CategoryYearly], retentionConfig.Yearly)
+		} else {
+			// No backups yet - show configured limits
+			result += fmt.Sprintf("\n  Daily: 0/%d, Weekly: 0/%d, Monthly: 0/%d, Yearly: 0/%d",
+				retentionConfig.Daily, retentionConfig.Weekly,
+				retentionConfig.Monthly, retentionConfig.Yearly)
+		}
+		return result
+	}
+
+	// Simple retention mode - format uniformly with GFS
+	result := fmt.Sprintf("✓ %s initialized (present %s)", name, formatBackupNoun(stats.TotalBackups))
+	result += fmt.Sprintf("\n  Policy: simple (keep %d newest)", retentionConfig.MaxBackups)
+	return result
+}
+
+func logStorageInitSummary(summary string) {
+	if summary == "" {
+		return
+	}
+	for _, line := range strings.Split(summary, "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		logging.Info("%s", line)
+	}
 }
 
 func formatBackupNoun(n int) string {
@@ -1179,6 +1227,24 @@ func formatBackupNoun(n int) string {
 		return "1 backup"
 	}
 	return fmt.Sprintf("%d backups", n)
+}
+
+// fetchBackupList attempts to list backups from a storage backend
+// Returns nil if the backend doesn't support listing or if an error occurs
+func fetchBackupList(ctx context.Context, backend storage.Storage) []*types.BackupMetadata {
+	// Check if backend supports List operation
+	listable, ok := backend.(interface {
+		List(context.Context) ([]*types.BackupMetadata, error)
+	})
+	if !ok {
+		return nil
+	}
+
+	backups, err := listable.List(ctx)
+	if err != nil {
+		return nil
+	}
+	return backups
 }
 
 func runInstall(ctx context.Context, configPath string, bootstrap *logging.BootstrapLogger) error {

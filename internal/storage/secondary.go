@@ -418,18 +418,14 @@ func (s *SecondaryStorage) Delete(ctx context.Context, backupFile string) error 
 }
 
 // ApplyRetention removes old backups according to retention policy
-func (s *SecondaryStorage) ApplyRetention(ctx context.Context, maxBackups int) (int, error) {
+// Supports both simple (count-based) and GFS (time-distributed) policies
+func (s *SecondaryStorage) ApplyRetention(ctx context.Context, config RetentionConfig) (int, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}
 
-	if maxBackups <= 0 {
-		s.logger.Debug("Retention disabled for secondary storage (maxBackups = %d)", maxBackups)
-		return 0, nil
-	}
-
 	// List all backups
-	s.logger.Debug("Secondary storage: listing backups prior to retention (limit=%d)", maxBackups)
+	s.logger.Debug("Secondary storage: listing backups for retention policy '%s'", config.Policy)
 	backups, err := s.List(ctx)
 	if err != nil {
 		s.logger.Warning("WARNING: Secondary storage - failed to list backups for retention: %v", err)
@@ -443,6 +439,71 @@ func (s *SecondaryStorage) ApplyRetention(ctx context.Context, maxBackups int) (
 		}
 	}
 
+	if len(backups) == 0 {
+		s.logger.Debug("Secondary storage: no backups to apply retention")
+		return 0, nil
+	}
+
+	// Apply appropriate retention policy
+	if config.Policy == "gfs" {
+		return s.applyGFSRetention(ctx, backups, config)
+	}
+	return s.applySimpleRetention(ctx, backups, config.MaxBackups)
+}
+
+// applyGFSRetention applies GFS (Grandfather-Father-Son) retention policy
+func (s *SecondaryStorage) applyGFSRetention(ctx context.Context, backups []*types.BackupMetadata, config RetentionConfig) (int, error) {
+	s.logger.Info("Applying GFS retention policy (daily=%d, weekly=%d, monthly=%d, yearly=%d)",
+		config.Daily, config.Weekly, config.Monthly, config.Yearly)
+
+	// Classify backups according to GFS scheme
+	classification := ClassifyBackupsGFS(backups, config)
+
+	// Get statistics
+	stats := GetRetentionStats(classification)
+	s.logger.Info("GFS classification → daily: %d/%d, weekly: %d/%d, monthly: %d/%d, yearly: %d/%d, to_delete: %d",
+		stats[CategoryDaily], config.Daily,
+		stats[CategoryWeekly], config.Weekly,
+		stats[CategoryMonthly], config.Monthly,
+		stats[CategoryYearly], config.Yearly,
+		stats[CategoryDelete])
+
+	// Delete backups marked for deletion
+	deleted := 0
+	for backup, category := range classification {
+		if category != CategoryDelete {
+			continue
+		}
+
+		if err := ctx.Err(); err != nil {
+			return deleted, err
+		}
+
+		s.logger.Debug("Deleting old backup: %s (created: %s)",
+			filepath.Base(backup.BackupFile),
+			backup.Timestamp.Format("2006-01-02 15:04:05"))
+
+		if err := s.Delete(ctx, backup.BackupFile); err != nil {
+			s.logger.Warning("WARNING: Secondary storage - failed to delete %s: %v", backup.BackupFile, err)
+			continue
+		}
+
+		deleted++
+	}
+
+	remaining := len(backups) - deleted
+	s.logger.Info("Secondary storage retention applied: deleted %d backups, %d remaining", deleted, remaining)
+
+	return deleted, nil
+}
+
+// applySimpleRetention applies simple count-based retention policy
+func (s *SecondaryStorage) applySimpleRetention(ctx context.Context, backups []*types.BackupMetadata, maxBackups int) (int, error) {
+	if maxBackups <= 0 {
+		s.logger.Debug("Retention disabled for secondary storage (maxBackups = %d)", maxBackups)
+		return 0, nil
+	}
+
 	totalBackups := len(backups)
 	if totalBackups <= maxBackups {
 		s.logger.Debug("Secondary storage: %d backups (within retention limit of %d)", totalBackups, maxBackups)
@@ -451,7 +512,9 @@ func (s *SecondaryStorage) ApplyRetention(ctx context.Context, maxBackups int) (
 
 	// Calculate how many to delete
 	toDelete := totalBackups - maxBackups
-	s.logger.Info("Secondary storage: %d backups found, retention limit is %d, deleting %d oldest backups",
+	s.logger.Info("Applying simple retention policy: %d backups found, limit is %d, deleting %d oldest",
+		totalBackups, maxBackups, toDelete)
+	s.logger.Info("Simple retention → current: %d, limit: %d, to_delete: %d",
 		totalBackups, maxBackups, toDelete)
 
 	// Delete oldest backups (already sorted newest first)
@@ -462,10 +525,9 @@ func (s *SecondaryStorage) ApplyRetention(ctx context.Context, maxBackups int) (
 		}
 
 		backup := backups[i]
-		s.logger.Debug("Deleting old secondary backup: %s (created: %s)",
+		s.logger.Debug("Deleting old backup: %s (created: %s)",
 			filepath.Base(backup.BackupFile),
-			backup.Timestamp.Format("2006-01-02 15:04:05"),
-		)
+			backup.Timestamp.Format("2006-01-02 15:04:05"))
 
 		if err := s.Delete(ctx, backup.BackupFile); err != nil {
 			s.logger.Warning("WARNING: Secondary storage - failed to delete %s: %v", backup.BackupFile, err)
@@ -476,14 +538,7 @@ func (s *SecondaryStorage) ApplyRetention(ctx context.Context, maxBackups int) (
 	}
 
 	remaining := totalBackups - deleted
-	if recount, err := s.List(ctx); err == nil {
-		remaining = len(recount)
-	} else {
-		s.logger.Debug("Secondary storage: failed to recount backups after retention: %v", err)
-	}
-
-	s.logger.Debug("Secondary storage retention applied: deleted %d old backups, %d remaining",
-		deleted, remaining)
+	s.logger.Debug("Secondary storage retention applied: deleted %d backups, %d remaining", deleted, remaining)
 
 	return deleted, nil
 }

@@ -768,19 +768,15 @@ func (c *CloudStorage) Delete(ctx context.Context, backupFile string) error {
 }
 
 // ApplyRetention removes old backups according to retention policy
-// Uses batched deletion (20 files per batch with 1s pause) to avoid API rate limits
-func (c *CloudStorage) ApplyRetention(ctx context.Context, maxBackups int) (int, error) {
+// Supports both simple (count-based) and GFS (time-distributed) policies
+// Uses batched deletion to avoid API rate limits
+func (c *CloudStorage) ApplyRetention(ctx context.Context, config RetentionConfig) (int, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}
 
-	if maxBackups <= 0 {
-		c.logger.Debug("Retention disabled for cloud storage (maxBackups = %d)", maxBackups)
-		return 0, nil
-	}
-
 	// List all backups
-	c.logger.Debug("Cloud storage: listing backups prior to retention (limit=%d)", maxBackups)
+	c.logger.Debug("Cloud storage: listing backups for retention policy '%s'", config.Policy)
 	backups, err := c.List(ctx)
 	if err != nil {
 		c.logger.Warning("WARNING: Cloud storage - failed to list backups for retention: %v", err)
@@ -794,6 +790,54 @@ func (c *CloudStorage) ApplyRetention(ctx context.Context, maxBackups int) (int,
 		}
 	}
 
+	if len(backups) == 0 {
+		c.logger.Debug("Cloud storage: no backups to apply retention")
+		return 0, nil
+	}
+
+	// Apply appropriate retention policy
+	if config.Policy == "gfs" {
+		return c.applyGFSRetention(ctx, backups, config)
+	}
+	return c.applySimpleRetention(ctx, backups, config.MaxBackups)
+}
+
+// applyGFSRetention applies GFS (Grandfather-Father-Son) retention policy
+func (c *CloudStorage) applyGFSRetention(ctx context.Context, backups []*types.BackupMetadata, config RetentionConfig) (int, error) {
+	c.logger.Info("Applying GFS retention policy (daily=%d, weekly=%d, monthly=%d, yearly=%d)",
+		config.Daily, config.Weekly, config.Monthly, config.Yearly)
+
+	// Classify backups according to GFS scheme
+	classification := ClassifyBackupsGFS(backups, config)
+
+	// Get statistics
+	stats := GetRetentionStats(classification)
+	c.logger.Info("GFS classification → daily: %d/%d, weekly: %d/%d, monthly: %d/%d, yearly: %d/%d, to_delete: %d",
+		stats[CategoryDaily], config.Daily,
+		stats[CategoryWeekly], config.Weekly,
+		stats[CategoryMonthly], config.Monthly,
+		stats[CategoryYearly], config.Yearly,
+		stats[CategoryDelete])
+
+	// Collect backups marked for deletion
+	toDelete := make([]*types.BackupMetadata, 0)
+	for backup, category := range classification {
+		if category == CategoryDelete {
+			toDelete = append(toDelete, backup)
+		}
+	}
+
+	// Delete in batches to avoid API rate limits
+	return c.deleteBatched(ctx, toDelete)
+}
+
+// applySimpleRetention applies simple count-based retention policy
+func (c *CloudStorage) applySimpleRetention(ctx context.Context, backups []*types.BackupMetadata, maxBackups int) (int, error) {
+	if maxBackups <= 0 {
+		c.logger.Debug("Retention disabled for cloud storage (maxBackups = %d)", maxBackups)
+		return 0, nil
+	}
+
 	totalBackups := len(backups)
 	if totalBackups <= maxBackups {
 		c.logger.Debug("Cloud storage: %d backups (within retention limit of %d)", totalBackups, maxBackups)
@@ -802,24 +846,32 @@ func (c *CloudStorage) ApplyRetention(ctx context.Context, maxBackups int) (int,
 
 	// Calculate how many to delete
 	toDelete := totalBackups - maxBackups
-	c.logger.Info("Cloud storage: %d backups found, retention limit is %d, deleting %d oldest backups",
+	c.logger.Info("Applying simple retention policy: %d backups found, limit is %d, deleting %d oldest",
+		totalBackups, maxBackups, toDelete)
+	c.logger.Info("Simple retention → current: %d, limit: %d, to_delete: %d",
 		totalBackups, maxBackups, toDelete)
 
-	// Delete oldest backups in batches (to avoid API rate limits)
+	// Collect oldest backups (already sorted newest first)
+	oldBackups := backups[maxBackups:]
+
+	// Delete in batches to avoid API rate limits
+	return c.deleteBatched(ctx, oldBackups)
+}
+
+// deleteBatched deletes backups in batches to avoid API rate limits
+func (c *CloudStorage) deleteBatched(ctx context.Context, backups []*types.BackupMetadata) (int, error) {
 	deleted := 0
 	batchSize := c.config.CloudBatchSize
 	batchPause := time.Duration(c.config.CloudBatchPause) * time.Second
 
-	for i := totalBackups - 1; i >= maxBackups; i-- {
+	for i, backup := range backups {
 		if err := ctx.Err(); err != nil {
 			return deleted, err
 		}
 
-		backup := backups[i]
-		c.logger.Debug("Deleting old cloud backup: %s (created: %s)",
+		c.logger.Debug("Deleting old backup: %s (created: %s)",
 			backup.BackupFile,
-			backup.Timestamp.Format("2006-01-02 15:04:05"),
-		)
+			backup.Timestamp.Format("2006-01-02 15:04:05"))
 
 		if err := c.Delete(ctx, backup.BackupFile); err != nil {
 			c.logger.Warning("WARNING: Cloud storage - failed to delete %s: %v", backup.BackupFile, err)
@@ -829,24 +881,14 @@ func (c *CloudStorage) ApplyRetention(ctx context.Context, maxBackups int) (int,
 		deleted++
 
 		// Pause after each batch to avoid API rate limits
-		if deleted%batchSize == 0 && i > maxBackups {
+		if deleted%batchSize == 0 && i < len(backups)-1 {
 			c.logger.Debug("Batch of %d deletions completed, pausing for %v to avoid API rate limits",
-				batchSize,
-				batchPause)
+				batchSize, batchPause)
 			c.sleep(batchPause)
 		}
 	}
 
-	remaining := totalBackups - deleted
-	if recount, err := c.List(ctx); err == nil {
-		remaining = len(recount)
-	} else {
-		c.logger.Debug("Cloud storage: failed to recount backups after retention: %v", err)
-	}
-
-	c.logger.Debug("Cloud storage retention applied: deleted %d old backups, %d remaining",
-		deleted, remaining)
-
+	c.logger.Info("Cloud storage retention applied: deleted %d backups", deleted)
 	return deleted, nil
 }
 

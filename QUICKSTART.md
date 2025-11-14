@@ -272,6 +272,46 @@ Al termine puoi modificare a mano il file generato per tutte le opzioni avanzate
 - `CLOUD_LOG_PATH` deve contenere remote e path finale (es. `myremote:/logs`); a differenza dei backup, non viene combinato con `CLOUD_REMOTE_PATH`.
 - `MAX_*_BACKUPS` si applicano anche alla rotazione dei log (con 1 backup al giorno hai lo stesso numero di log).
 
+### Retention Policy - GFS (Grandfather-Father-Son)
+
+La versione Go supporta **due strategie di retention**:
+
+**1. Simple Retention (default)** - Basata su conteggio:
+```bash
+MAX_LOCAL_BACKUPS=15        # Mantieni 15 backup più recenti
+MAX_SECONDARY_BACKUPS=15
+MAX_CLOUD_BACKUPS=15
+```
+
+**2. GFS Retention** - Distribuzione temporale intelligente:
+```bash
+# Si attiva automaticamente quando imposti almeno una variabile RETENTION_*
+RETENTION_DAILY=7           # Mantieni ultimi 7 giorni
+RETENTION_WEEKLY=4          # Mantieni 4 backup settimanali (1 per settimana ISO)
+RETENTION_MONTHLY=12        # Mantieni 12 backup mensili (1 per mese)
+RETENTION_YEARLY=3          # Mantieni 3 backup annuali (1 per anno)
+```
+
+**Vantaggi GFS:**
+- ✅ Migliore copertura storica rispetto al conteggio semplice
+- ✅ Distribuzione automatica nel tempo (daily→weekly→monthly→yearly)
+- ✅ Numerazione settimana ISO 8601 standard
+- ✅ Logging predittivo: mostra cosa verrà eliminato prima della cancellazione
+- ✅ Configurabile per destinazione (local/secondary/cloud diversi)
+
+**Esempio output GFS:**
+```
+✓ Local storage initialized (present 25 backups)
+  Policy: GFS (daily=7, weekly=4, monthly=12, yearly=3)
+  Total: 25/-
+  Daily: 7/7
+  Weekly: 4/4
+  Monthly: 12/12
+  Yearly: 2/3
+
+GFS classification → daily: 7/7, weekly: 4/4, monthly: 12/12, yearly: 2/3, to_delete: 0
+```
+
 > ⚠️ **Non** modificare `reference/env/backup.env`: copia `configs/backup.env`, applica le modifiche Go-only e versiona solo quel file.
 
 ---

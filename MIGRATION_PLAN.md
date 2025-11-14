@@ -1650,82 +1650,162 @@ func (s *CloudStorage) Type() StorageType {
 
 ### 5.4 Rotation & Retention
 
-**File:** `internal/storage/rotation.go`
+**File:** `internal/storage/retention.go`
+
+**Obiettivi:**
+- ✅ Simple Retention (count-based): mantiene N backup più recenti
+- ✅ GFS Retention (time-distributed): backup distribuiti nel tempo
+- ✅ Classificazione automatica: daily, weekly, monthly, yearly
+- ✅ ISO week numbering per backup settimanali
+- ✅ Batched deletion per cloud storage (evita limiti API)
+
+**Implementazione:**
 
 ```go
 package storage
 
 import (
-    "context"
+    "fmt"
     "sort"
     "time"
 )
 
-type RotationPolicy struct {
+// RetentionConfig defines the retention policy configuration
+type RetentionConfig struct {
+    // Policy type: "simple" (count-based) or "gfs" (time-distributed)
+    Policy string
+
+    // Simple retention: total number of backups to keep
     MaxBackups int
-    MaxAge     time.Duration
+
+    // GFS retention: time-based distribution
+    Daily   int // Keep backups from last N days
+    Weekly  int // Keep N weekly backups (one per week)
+    Monthly int // Keep N monthly backups (one per month)
+    Yearly  int // Keep N yearly backups (one per year, 0 = keep all)
 }
 
-type RotationManager struct {
-    storage Storage
-    policy  RotationPolicy
-    logger  *logging.Logger
-}
+// RetentionCategory represents the classification of a backup
+type RetentionCategory string
 
-func NewRotationManager(s Storage, p RotationPolicy, log *logging.Logger) *RotationManager {
-    return &RotationManager{
-        storage: s,
-        policy:  p,
-        logger:  log,
+const (
+    CategoryDaily   RetentionCategory = "daily"
+    CategoryWeekly  RetentionCategory = "weekly"
+    CategoryMonthly RetentionCategory = "monthly"
+    CategoryYearly  RetentionCategory = "yearly"
+    CategoryDelete  RetentionCategory = "delete"
+)
+
+// ClassifyBackupsGFS classifies backups according to GFS scheme
+func ClassifyBackupsGFS(backups []*BackupMetadata, config RetentionConfig) map[*BackupMetadata]RetentionCategory {
+    if len(backups) == 0 {
+        return make(map[*BackupMetadata]RetentionCategory)
     }
-}
 
-func (rm *RotationManager) Rotate(ctx context.Context, path string) error {
-    // Lista backup esistenti
-    files, err := rm.storage.List(ctx, path)
-    if err != nil {
-        return err
-    }
-
-    // Ordina per data (più recente prima)
-    sort.Slice(files, func(i, j int) bool {
-        return files[i].ModTime.After(files[j].ModTime)
+    // Sort by timestamp descending (newest first)
+    sort.Slice(backups, func(i, j int) bool {
+        return backups[i].Timestamp.After(backups[j].Timestamp)
     })
 
-    // Rimuovi backup vecchi (oltre MaxBackups)
-    if len(files) > rm.policy.MaxBackups {
-        for _, f := range files[rm.policy.MaxBackups:] {
-            rm.logger.Info("Removing old backup",
-                zap.String("file", f.Path))
+    classification := make(map[*BackupMetadata]RetentionCategory)
+    now := time.Now()
 
-            if err := rm.storage.Delete(ctx, f.Path); err != nil {
-                rm.logger.Error("Failed to delete",
-                    zap.String("file", f.Path),
-                    zap.Error(err))
+    // 1. DAILY: Keep all backups from last N days
+    if config.Daily > 0 {
+        cutoffDaily := now.AddDate(0, 0, -config.Daily)
+        for _, b := range backups {
+            if b.Timestamp.After(cutoffDaily) {
+                classification[b] = CategoryDaily
             }
         }
     }
 
-    // Rimuovi backup troppo vecchi (oltre MaxAge)
-    if rm.policy.MaxAge > 0 {
-        cutoff := time.Now().Add(-rm.policy.MaxAge)
-        for _, f := range files {
-            if f.ModTime.Before(cutoff) {
-                rm.logger.Info("Removing expired backup",
-                    zap.String("file", f.Path))
+    // 2. WEEKLY: Keep one backup per week (ISO week number)
+    if config.Weekly > 0 {
+        weeksSeen := make(map[string]bool)
+        for _, b := range backups {
+            if classification[b] != "" {
+                continue // Already classified
+            }
 
-                if err := rm.storage.Delete(ctx, f.Path); err != nil {
-                    rm.logger.Error("Failed to delete",
-                        zap.String("file", f.Path),
-                        zap.Error(err))
-                }
+            year, week := b.Timestamp.ISOWeek()
+            weekKey := fmt.Sprintf("%d-W%02d", year, week)
+
+            if !weeksSeen[weekKey] && len(weeksSeen) < config.Weekly {
+                classification[b] = CategoryWeekly
+                weeksSeen[weekKey] = true
             }
         }
     }
 
-    return nil
+    // 3. MONTHLY: Keep one backup per month
+    if config.Monthly > 0 {
+        monthsSeen := make(map[string]bool)
+        for _, b := range backups {
+            if classification[b] != "" {
+                continue
+            }
+
+            monthKey := b.Timestamp.Format("2006-01")
+
+            if !monthsSeen[monthKey] && len(monthsSeen) < config.Monthly {
+                classification[b] = CategoryMonthly
+                monthsSeen[monthKey] = true
+            }
+        }
+    }
+
+    // 4. YEARLY: Keep one backup per year
+    if config.Yearly >= 0 {
+        yearsSeen := make(map[string]bool)
+        for _, b := range backups {
+            if classification[b] != "" {
+                continue
+            }
+
+            yearKey := b.Timestamp.Format("2006")
+
+            // Yearly == 0 means keep all yearly backups (no limit)
+            keepThisYear := !yearsSeen[yearKey] && (config.Yearly == 0 || len(yearsSeen) < config.Yearly)
+            if keepThisYear {
+                classification[b] = CategoryYearly
+                yearsSeen[yearKey] = true
+            }
+        }
+    }
+
+    // 5. Mark remaining backups for deletion
+    for _, b := range backups {
+        if classification[b] == "" {
+            classification[b] = CategoryDelete
+        }
+    }
+
+    return classification
 }
 ```
+
+**Configurazione:**
+
+```bash
+# Simple Retention (default)
+MAX_LOCAL_BACKUPS=15
+MAX_SECONDARY_BACKUPS=15
+MAX_CLOUD_BACKUPS=15
+
+# GFS Retention (attivato automaticamente se imposti RETENTION_*)
+RETENTION_DAILY=7        # Keep last 7 days
+RETENTION_WEEKLY=4       # Keep 4 weekly backups
+RETENTION_MONTHLY=12     # Keep 12 monthly backups
+RETENTION_YEARLY=3       # Keep 3 yearly backups (0 = keep all)
+```
+
+**Vantaggi GFS:**
+- ✅ Migliore copertura storica rispetto a count-based
+- ✅ Distribuzione automatica dei backup nel tempo
+- ✅ Configurabile per destinazione (local, secondary, cloud)
+- ✅ Logging predittivo (mostra cosa verrà eliminato)
+- ✅ Batched deletion per cloud (previene rate limiting)
 
 ### 5.5 Parallel Upload
 

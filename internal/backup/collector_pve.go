@@ -89,6 +89,7 @@ func (c *Collector) CollectPVEConfigs(ctx context.Context) error {
 
 	// Collect VM/CT configurations
 	if c.config.BackupVMConfigs {
+		c.logger.Info("Collecting VM and container configurations")
 		c.logger.Debug("Collecting VM/CT configuration files")
 		if err := c.collectVMConfigs(ctx); err != nil {
 			c.logger.Warning("Failed to collect VM configs: %v", err)
@@ -96,6 +97,8 @@ func (c *Collector) CollectPVEConfigs(ctx context.Context) error {
 		} else {
 			c.logger.Debug("VM/CT configuration collection completed")
 		}
+	} else {
+		c.logger.Info("VM/container configuration backup disabled - skipping")
 	}
 
 	if c.config.BackupPVEJobs {
@@ -182,6 +185,12 @@ func (c *Collector) collectPVEDirectories(ctx context.Context, clustered bool) e
 			"PVE cluster data"); err != nil {
 			c.logger.Warning("Failed to copy cluster data: %v", err)
 		}
+	} else {
+		if !c.config.BackupClusterConfig {
+			c.logger.Info("PVE cluster backup disabled - skipping Corosync configuration")
+		} else {
+			c.logger.Info("PVE cluster not configured (single node) - skipping Corosync configuration")
+		}
 	}
 
 	// Firewall configuration
@@ -204,14 +213,17 @@ func (c *Collector) collectPVEDirectories(ctx context.Context, clustered bool) e
 				}
 			}
 		} else if errors.Is(err, os.ErrNotExist) {
-			c.logger.Debug("No firewall configuration found at %s", firewallSrc)
+			c.logger.Info("PVE firewall configuration not found (no rules configured) - skipping")
 		} else {
 			c.logger.Warning("Failed to access firewall configuration %s: %v", firewallSrc, err)
 		}
+	} else {
+		c.logger.Info("PVE firewall backup disabled - skipping")
 	}
 
 	// VZDump configuration
 	if c.config.BackupVZDumpConfig {
+		c.logger.Info("Collecting VZDump backup configuration")
 		vzdumpPath := c.config.VzdumpConfigPath
 		if vzdumpPath == "" {
 			vzdumpPath = "/etc/vzdump.conf"
@@ -224,6 +236,8 @@ func (c *Collector) collectPVEDirectories(ctx context.Context, clustered bool) e
 			"VZDump configuration"); err != nil {
 			c.logger.Debug("No vzdump.conf found")
 		}
+	} else {
+		c.logger.Info("VZDump configuration backup disabled - skipping")
 	}
 
 	c.logger.Debug("PVE directory snapshot completed")
@@ -646,12 +660,16 @@ func (c *Collector) collectPVEStorageMetadata(ctx context.Context, storages []pv
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	c.logger.Info("Collecting PVE datastore information using auto-detection")
 	c.logger.Debug("Collecting datastore metadata for %d storages", len(storages))
 
 	if len(storages) == 0 {
-		c.logger.Debug("No PVE storage entries detected, skipping datastore metadata")
+		c.logger.Info("Found 0 PVE datastore(s) via auto-detection")
+		c.logger.Info("No PVE datastores detected - skipping metadata collection")
 		return nil
 	}
+
+	c.logger.Info("Found %d PVE datastore(s) via auto-detection", len(storages))
 
 	baseDir := filepath.Join(c.tempDir, "var/lib/pve-cluster/info/datastores")
 	if err := c.ensureDir(baseDir); err != nil {
@@ -742,6 +760,9 @@ func (c *Collector) collectPVEStorageMetadata(ctx context.Context, storages []pv
 			return err
 		}
 
+		if c.config.BackupPVEBackupFiles {
+			c.logger.Info("Analyzing PVE backup files in datastore: %s", storage.Name)
+		}
 		if err := c.collectDetailedPVEBackups(ctx, storage, metaDir); err != nil {
 			c.logger.Warning("Detailed backup analysis for %s failed: %v", storage.Name, err)
 		}
@@ -778,6 +799,7 @@ func (c *Collector) collectDetailedPVEBackups(ctx context.Context, storage pveSt
 		c.logger.Debug("No valid backup patterns for datastore %s", storage.Name)
 		return nil
 	}
+	c.logger.Info("Scanning for PVE backup files in datastore: %s (optimized single scan)", storage.Name)
 	defer func() {
 		for _, w := range writers {
 			if err := w.Close(); err != nil {
@@ -862,6 +884,12 @@ func (c *Collector) collectDetailedPVEBackups(ctx context.Context, storage pveSt
 
 	if err := c.writePatternSummary(storage, analysisDir, writers, totalFiles, totalSize); err != nil {
 		return err
+	}
+	for _, w := range writers {
+		if w.count == 0 {
+			continue
+		}
+		c.logger.Info("Found %d backup files (%s) in datastore: %s", w.count, describePatternForLog(w.pattern), storage.Name)
 	}
 	return nil
 }
@@ -977,6 +1005,15 @@ func cleanPatternName(pattern string) string {
 		return "all"
 	}
 	return clean
+}
+
+func describePatternForLog(pattern string) string {
+	trimmed := strings.Trim(pattern, "*")
+	trimmed = strings.TrimSpace(trimmed)
+	if trimmed == "" {
+		return pattern
+	}
+	return trimmed
 }
 
 func matchPattern(name, pattern string) bool {

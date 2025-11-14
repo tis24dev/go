@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/tis24dev/proxmox-backup/internal/config"
 	"github.com/tis24dev/proxmox-backup/internal/logging"
 	"github.com/tis24dev/proxmox-backup/internal/storage"
 	"github.com/tis24dev/proxmox-backup/internal/types"
@@ -13,17 +14,17 @@ import (
 type StorageAdapter struct {
 	backend      storage.Storage
 	logger       *logging.Logger
-	maxBackups   int // Retention policy: max number of backups to keep
+	config       *config.Config // Main configuration for retention policy
 	fsInfo       *storage.FilesystemInfo
 	initialStats *storage.StorageStats
 }
 
 // NewStorageAdapter creates a new storage adapter
-func NewStorageAdapter(backend storage.Storage, logger *logging.Logger, maxBackups int) *StorageAdapter {
+func NewStorageAdapter(backend storage.Storage, logger *logging.Logger, cfg *config.Config) *StorageAdapter {
 	return &StorageAdapter{
-		backend:    backend,
-		logger:     logger,
-		maxBackups: maxBackups,
+		backend: backend,
+		logger:  logger,
+		config:  cfg,
 	}
 }
 
@@ -96,10 +97,17 @@ func (s *StorageAdapter) Sync(ctx context.Context, stats *BackupStats) error {
 	}
 
 	// Step 4: Apply retention policy
-	if s.maxBackups > 0 {
-		s.logger.Info("%s: Applying retention policy (keeping %d backups)...", s.backend.Name(), s.maxBackups)
+	retentionConfig := storage.NewRetentionConfigFromConfig(s.config, s.backend.Location())
+	if retentionConfig.MaxBackups > 0 || retentionConfig.Policy == "gfs" {
+		if retentionConfig.Policy == "gfs" {
+			s.logger.Info("%s: Applying GFS retention policy...", s.backend.Name())
+		} else {
+			s.logger.Info("%s: Applying retention policy...", s.backend.Name())
+		}
+		s.logRetentionPolicyDetails(retentionConfig)
+
 		s.logCurrentBackupCount()
-		deleted, err := s.backend.ApplyRetention(ctx, s.maxBackups)
+		deleted, err := s.backend.ApplyRetention(ctx, retentionConfig)
 		if err != nil {
 			// Check if error is critical
 			if s.backend.IsCritical() {
@@ -155,6 +163,22 @@ func (s *StorageAdapter) logCurrentBackupCount() {
 		return
 	}
 	s.logger.Debug("%s: Current backups detected: %d", s.backend.Name(), len(backups))
+}
+
+func (s *StorageAdapter) logRetentionPolicyDetails(cfg storage.RetentionConfig) {
+	if s.logger == nil {
+		return
+	}
+	if cfg.Policy == "gfs" {
+		s.logger.Info("  Policy: GFS (daily=%d, weekly=%d, monthly=%d, yearly=%d)",
+			cfg.Daily, cfg.Weekly, cfg.Monthly, cfg.Yearly)
+		return
+	}
+	if cfg.MaxBackups > 0 {
+		s.logger.Info("  Policy: simple (keep %d newest)", cfg.MaxBackups)
+	} else {
+		s.logger.Info("  Policy: simple (disabled)")
+	}
 }
 
 // formatBytes formats bytes in human-readable format
