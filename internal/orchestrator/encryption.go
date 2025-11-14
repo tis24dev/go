@@ -158,17 +158,21 @@ func (o *Orchestrator) runAgeSetupWizard(ctx context.Context, candidatePath stri
 	}()
 
 	recipientPath := targetPath
-	if o.forceNewAgeRecipient {
-		fmt.Printf("WARNING: this will remove the existing AGE recipients stored at %s. Existing backups remain decryptable with your old private key.\n", recipientPath)
-		confirm, err := promptYesNo(wizardCtx, reader, fmt.Sprintf("Delete %s and enter a new recipient? [y/N]: ", recipientPath))
-		if err != nil {
-			return nil, "", err
-		}
-		if !confirm {
-			return nil, "", fmt.Errorf("operation aborted by user")
-		}
-		if err := backupExistingRecipientFile(recipientPath); err != nil {
-			fmt.Printf("NOTE: %v\n", err)
+	if o.forceNewAgeRecipient && recipientPath != "" {
+		if _, err := os.Stat(recipientPath); err == nil {
+			fmt.Printf("WARNING: this will remove the existing AGE recipients stored at %s. Existing backups remain decryptable with your old private key.\n", recipientPath)
+			confirm, errPrompt := promptYesNo(wizardCtx, reader, fmt.Sprintf("Delete %s and enter a new recipient? [y/N]: ", recipientPath))
+			if errPrompt != nil {
+				return nil, "", errPrompt
+			}
+			if !confirm {
+				return nil, "", fmt.Errorf("operation aborted by user")
+			}
+			if err := backupExistingRecipientFile(recipientPath); err != nil {
+				fmt.Printf("NOTE: %v\n", err)
+			}
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return nil, "", fmt.Errorf("failed to inspect existing AGE recipients at %s: %w", recipientPath, err)
 		}
 	}
 

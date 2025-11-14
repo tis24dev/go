@@ -1221,7 +1221,12 @@ func resolveInstallConfigPath(configPath string) (string, error) {
 
 func printInstallBanner(configPath string) {
 	fmt.Println("===========================================")
-	fmt.Println(" Proxmox Backup Go - Install Wizard")
+	fmt.Println("  Proxmox Backup - Go Version")
+	fmt.Printf("  Version: %s\n", version)
+	if sig := buildSignature(); sig != "" {
+		fmt.Printf("  Build Signature: %s\n", sig)
+	}
+	fmt.Println("  Mode: Install Wizard")
 	fmt.Println("===========================================")
 	fmt.Printf("Configuration file: %s\n\n", configPath)
 }
