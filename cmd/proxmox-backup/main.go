@@ -1593,7 +1593,6 @@ func sanitizeEnvValue(value string) string {
 }
 
 func buildSignature() string {
-	now := time.Now().Format(time.RFC3339)
 	hash := executableHash()
 	if info, ok := debug.ReadBuildInfo(); ok {
 		var revision, vcsTime string
@@ -1610,24 +1609,42 @@ func buildSignature() string {
 				}
 			}
 		}
-		if revision != "" || vcsTime != "" {
+		formattedTime := formatBuildTime(vcsTime)
+		if revision != "" {
 			shortRev := revision
 			if len(shortRev) > 9 {
 				shortRev = shortRev[:9]
 			}
-			if shortRev != "" {
-				sig := fmt.Sprintf("%s%s (%s)", shortRev, modified, now)
-				if hash != "" {
-					sig = fmt.Sprintf("%s hash=%s", sig, truncateHash(hash))
-				}
-				return sig
+			sig := shortRev + modified
+			if formattedTime != "" {
+				sig = fmt.Sprintf("%s (%s)", sig, formattedTime)
 			}
+			if hash != "" {
+				sig = fmt.Sprintf("%s hash=%s", sig, truncateHash(hash))
+			}
+			return sig
+		}
+		if formattedTime != "" {
+			if hash != "" {
+				return fmt.Sprintf("%s hash=%s", formattedTime, truncateHash(hash))
+			}
+			return formattedTime
 		}
 	}
 	if hash != "" {
-		return fmt.Sprintf("%s hash=%s", now, truncateHash(hash))
+		return fmt.Sprintf("hash=%s", truncateHash(hash))
 	}
-	return now
+	return ""
+}
+
+func formatBuildTime(raw string) string {
+	if strings.TrimSpace(raw) == "" {
+		return ""
+	}
+	if t, err := time.Parse(time.RFC3339, raw); err == nil {
+		return t.Local().Format(time.RFC3339)
+	}
+	return raw
 }
 
 func executableHash() string {
