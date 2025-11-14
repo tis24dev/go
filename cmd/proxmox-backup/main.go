@@ -299,10 +299,8 @@ func run() int {
 		logging.Info("Server Telegram: %s", telegramServerStatus)
 	}
 
-	execPath, err := os.Executable()
-	if err != nil {
-		execPath = ""
-	}
+	execInfo := getExecInfo()
+	execPath := execInfo.ExecPath
 	if _, secErr := security.Run(ctx, logger, cfg, args.ConfigPath, execPath, envInfo); secErr != nil {
 		logging.Error("Security checks failed: %v", secErr)
 		return types.ExitSecurityError.Int()
@@ -1018,32 +1016,52 @@ func ensureConfigExists(path string, logger configStatusLogger) error {
 	return nil
 }
 
-func detectBaseDir() (string, bool) {
+type ExecInfo struct {
+	ExecPath string
+	ExecDir  string
+	BaseDir  string
+	HasBase  bool
+}
+
+var (
+	execInfo     ExecInfo
+	execInfoOnce sync.Once
+)
+
+func getExecInfo() ExecInfo {
+	execInfoOnce.Do(func() {
+		execInfo = detectExecInfo()
+	})
+	return execInfo
+}
+
+func detectExecInfo() ExecInfo {
 	execPath, err := os.Executable()
 	if err != nil {
-		return "", false
+		return ExecInfo{}
 	}
 
-	resolved, err := filepath.EvalSymlinks(execPath)
-	if err != nil {
-		resolved = execPath
+	if resolved, err := filepath.EvalSymlinks(execPath); err == nil && resolved != "" {
+		execPath = resolved
 	}
 
-	dir := filepath.Dir(resolved)
+	execDir := filepath.Dir(execPath)
+	dir := execDir
 	originalDir := dir
+	baseDir := ""
 
 	for {
-		if dir == "" || dir == "/" || dir == "." {
+		if dir == "" || dir == "." || dir == string(filepath.Separator) {
 			break
 		}
-
 		if info, err := os.Stat(filepath.Join(dir, "env")); err == nil && info.IsDir() {
-			return dir, true
+			baseDir = dir
+			break
 		}
 		if info, err := os.Stat(filepath.Join(dir, "script")); err == nil && info.IsDir() {
-			return dir, true
+			baseDir = dir
+			break
 		}
-
 		parent := filepath.Dir(dir)
 		if parent == dir {
 			break
@@ -1051,12 +1069,23 @@ func detectBaseDir() (string, bool) {
 		dir = parent
 	}
 
-	// Heuristic fallback: mimic bash script behaviour (parent of executable directory)
-	if parent := filepath.Dir(originalDir); parent != "" && parent != "/" && parent != "." {
-		return parent, true
+	if baseDir == "" {
+		if parent := filepath.Dir(originalDir); parent != "" && parent != "." && parent != string(filepath.Separator) {
+			baseDir = parent
+		}
 	}
 
-	return originalDir, true
+	return ExecInfo{
+		ExecPath: execPath,
+		ExecDir:  execDir,
+		BaseDir:  baseDir,
+		HasBase:  baseDir != "",
+	}
+}
+
+func detectBaseDir() (string, bool) {
+	info := getExecInfo()
+	return info.BaseDir, info.HasBase
 }
 
 func detectFilesystemInfo(ctx context.Context, backend storage.Storage, path string, logger *logging.Logger) (*storage.FilesystemInfo, error) {
@@ -1234,12 +1263,17 @@ func resolveInstallConfigPath(configPath string) (string, error) {
 	if filepath.IsAbs(configPath) {
 		return configPath, nil
 	}
-	exe, err := os.Executable()
-	if err != nil {
-		return "", fmt.Errorf("failed to resolve executable path: %w", err)
+	info := getExecInfo()
+	baseDir := info.BaseDir
+	if baseDir == "" {
+		// Fallback: parent of executable directory, then hardcoded default
+		if info.ExecDir != "" {
+			baseDir = filepath.Dir(info.ExecDir)
+		}
+		if baseDir == "" || baseDir == "." || baseDir == string(filepath.Separator) {
+			baseDir = "/opt/proxmox-backup"
+		}
 	}
-	exeDir := filepath.Dir(exe)
-	baseDir := filepath.Dir(exeDir)
 	return filepath.Join(baseDir, configPath), nil
 }
 
@@ -1597,11 +1631,11 @@ func buildSignature() string {
 }
 
 func executableHash() string {
-	exePath, err := os.Executable()
-	if err != nil {
+	info := getExecInfo()
+	if info.ExecPath == "" {
 		return ""
 	}
-	f, err := os.Open(exePath)
+	f, err := os.Open(info.ExecPath)
 	if err != nil {
 		return ""
 	}
