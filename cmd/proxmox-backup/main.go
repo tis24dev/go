@@ -1145,40 +1145,40 @@ func runInstall(ctx context.Context, configPath string, bootstrap *logging.Boots
 	fmt.Println("===========================================")
 	fmt.Println(" Proxmox Backup Go - Install Wizard")
 	fmt.Println("===========================================")
-	fmt.Printf("File di configurazione: %s\n\n", configPath)
+	fmt.Printf("Configuration file: %s\n\n", configPath)
 
 	if _, err := os.Stat(configPath); err == nil {
-		overwrite, err := promptYesNo(reader, fmt.Sprintf("%s esiste già. Sovrascrivere? [y/N]: ", configPath), false)
+		overwrite, err := promptYesNo(reader, fmt.Sprintf("%s already exists. Overwrite? [y/N]: ", configPath), false)
 		if err != nil {
 			return err
 		}
 		if !overwrite {
-			return fmt.Errorf("installazione annullata (file esistente mantenuto)")
+			return fmt.Errorf("installation aborted (existing configuration kept)")
 		}
 	}
 
-	create, err := promptYesNo(reader, "Generare il file di configurazione dal template standard? [y/N]: ", false)
+	create, err := promptYesNo(reader, "Generate configuration file from default template? [y/N]: ", false)
 	if err != nil {
 		return err
 	}
 	if !create {
-		return fmt.Errorf("installazione annullata dall'utente")
+		return fmt.Errorf("installation aborted by user")
 	}
 
 	template := config.DefaultEnvTemplate()
 
-	fmt.Println("\n--- Storage secondario ---")
-	fmt.Println("Imposta un percorso aggiuntivo per replicare i backup localmente. (Modificabile in seguito)")
-	enableSecondary, err := promptYesNo(reader, "Abilitare il backup secondario? [y/N]: ", false)
+	fmt.Println("\n--- Secondary storage ---")
+	fmt.Println("Configure an additional local path for redundant copies. (You can change it later)")
+	enableSecondary, err := promptYesNo(reader, "Enable secondary backup path? [y/N]: ", false)
 	if err != nil {
 		return err
 	}
 	if enableSecondary {
-		secondaryPath, err := promptNonEmpty(reader, "Percorso backup secondario (SECONDARY_PATH): ")
+		secondaryPath, err := promptNonEmpty(reader, "Secondary backup path (SECONDARY_PATH): ")
 		if err != nil {
 			return err
 		}
-		secondaryLog, err := promptNonEmpty(reader, "Percorso log secondario (SECONDARY_LOG_PATH): ")
+		secondaryLog, err := promptNonEmpty(reader, "Secondary log path (SECONDARY_LOG_PATH): ")
 		if err != nil {
 			return err
 		}
@@ -1191,18 +1191,18 @@ func runInstall(ctx context.Context, configPath string, bootstrap *logging.Boots
 		template = setEnvValue(template, "SECONDARY_LOG_PATH", "")
 	}
 
-	fmt.Println("\n--- Storage cloud (rclone) ---")
-	fmt.Println("Ricorda di configurare rclone manualmente prima di usare il cloud.")
-	enableCloud, err := promptYesNo(reader, "Abilitare il backup su cloud? [y/N]: ", false)
+	fmt.Println("\n--- Cloud storage (rclone) ---")
+	fmt.Println("Remember to configure rclone manually before enabling cloud backups.")
+	enableCloud, err := promptYesNo(reader, "Enable cloud backups? [y/N]: ", false)
 	if err != nil {
 		return err
 	}
 	if enableCloud {
-		remote, err := promptNonEmpty(reader, "Remote rclone per i backup (es. myremote:pbs-backups): ")
+		remote, err := promptNonEmpty(reader, "Rclone remote for backups (e.g. myremote:pbs-backups): ")
 		if err != nil {
 			return err
 		}
-		logRemote, err := promptNonEmpty(reader, "Remote per i log (es. myremote:/logs): ")
+		logRemote, err := promptNonEmpty(reader, "Rclone remote for logs (e.g. myremote:/logs): ")
 		if err != nil {
 			return err
 		}
@@ -1216,7 +1216,7 @@ func runInstall(ctx context.Context, configPath string, bootstrap *logging.Boots
 	}
 
 	fmt.Println("\n--- Telegram ---")
-	enableTelegram, err := promptYesNo(reader, "Abilitare Telegram (centralizzato)? [y/N]: ", false)
+	enableTelegram, err := promptYesNo(reader, "Enable Telegram notifications (centralized)? [y/N]: ", false)
 	if err != nil {
 		return err
 	}
@@ -1228,7 +1228,7 @@ func runInstall(ctx context.Context, configPath string, bootstrap *logging.Boots
 	}
 
 	fmt.Println("\n--- Email ---")
-	enableEmail, err := promptYesNo(reader, "Abilitare email (relay centralizzato)? [y/N]: ", false)
+	enableEmail, err := promptYesNo(reader, "Enable email notifications (central relay)? [y/N]: ", false)
 	if err != nil {
 		return err
 	}
@@ -1240,8 +1240,8 @@ func runInstall(ctx context.Context, configPath string, bootstrap *logging.Boots
 		template = setEnvValue(template, "EMAIL_ENABLED", "false")
 	}
 
-	fmt.Println("\n--- Crittografia ---")
-	enableEncryption, err := promptYesNo(reader, "Abilitare la crittografia dei backup? [y/N]: ", false)
+	fmt.Println("\n--- Encryption ---")
+	enableEncryption, err := promptYesNo(reader, "Enable backup encryption? [y/N]: ", false)
 	if err != nil {
 		return err
 	}
@@ -1253,32 +1253,33 @@ func runInstall(ctx context.Context, configPath string, bootstrap *logging.Boots
 
 	dir := filepath.Dir(configPath)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return fmt.Errorf("creazione directory configurazione: %w", err)
+		return fmt.Errorf("failed to create configuration directory: %w", err)
 	}
 	if err := os.WriteFile(configPath, []byte(template), 0o600); err != nil {
-		return fmt.Errorf("scrittura configurazione: %w", err)
+		return fmt.Errorf("failed to write configuration file: %w", err)
 	}
-	bootstrap.Info("✓ Configurazione salvata in %s", configPath)
+	bootstrap.Info("✓ Configuration saved at %s", configPath)
 
 	if enableEncryption {
 		cfg, err := config.LoadConfig(configPath)
 		if err != nil {
-			return fmt.Errorf("reload configurazione dopo install: %w", err)
+			return fmt.Errorf("failed to reload configuration after install: %w", err)
 		}
-		logger := logging.New(types.LogLevelInfo, true)
+		logger := logging.New(types.LogLevelError, false)
+		logger.SetOutput(io.Discard)
 		orch := orchestrator.New(logger, "/opt/proxmox-backup/script", false)
 		orch.SetConfig(cfg)
 		orch.SetForceNewAgeRecipient(true)
 		if err := orch.EnsureAgeRecipientsReady(ctx); err != nil {
 			if errors.Is(err, orchestrator.ErrAgeRecipientSetupAborted) {
-				return fmt.Errorf("setup crittografia interrotto dall'utente")
+				return fmt.Errorf("encryption setup aborted by user")
 			}
-			return fmt.Errorf("setup crittografia fallito: %w", err)
+			return fmt.Errorf("encryption setup failed: %w", err)
 		}
 	}
 
-	fmt.Println("\nInstallazione completata.")
-	fmt.Println("Altre opzioni avanzate sono disponibili modificando direttamente il file env generato.")
+	fmt.Println("\nInstallation completed.")
+	fmt.Println("You can adjust any other advanced option directly in the generated env file.")
 	return nil
 }
 
@@ -1299,7 +1300,7 @@ func promptYesNo(reader *bufio.Reader, question string, defaultYes bool) (bool, 
 		case "n", "no":
 			return false, nil
 		default:
-			fmt.Println("Rispondi con 'y' oppure 'n'.")
+			fmt.Println("Please answer with 'y' or 'n'.")
 		}
 	}
 }
@@ -1315,7 +1316,7 @@ func promptNonEmpty(reader *bufio.Reader, question string) (string, error) {
 		if resp != "" {
 			return resp, nil
 		}
-		fmt.Println("Il valore non può essere vuoto.")
+		fmt.Println("Value cannot be empty.")
 	}
 }
 
