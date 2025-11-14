@@ -111,24 +111,34 @@ func sortLogCategories(list []notify.LogCategory) {
 }
 
 // classifyLogLine extracts the entry type and message from a log line
+// Supports both Go format ("[2025-11-14 10:30:45] WARNING message") and Bash format ("[WARNING] message")
 func classifyLogLine(line string) (entryType, message string) {
 	line = strings.TrimSpace(line)
 	if line == "" {
 		return "", ""
 	}
 
+	// Try to match both formats:
+	// - Go format: "[2025-11-14 10:30:45] WARNING  message"
+	// - Bash format: "[WARNING] message"
 	for _, tag := range []struct {
 		Type string
 		Tags []string
 	}{
-		{"error", []string{"[ERROR]", "[Error]", "[error]"}},
-		{"warning", []string{"[WARNING]", "[Warning]", "[warning]"}},
+		{"error", []string{"[ERROR]", "[Error]", "[error]", "ERROR", "Error"}},
+		{"warning", []string{"[WARNING]", "[Warning]", "[warning]", "WARNING", "Warning"}},
 	} {
 		for _, marker := range tag.Tags {
 			if idx := strings.Index(line, marker); idx != -1 {
-				msg := strings.TrimSpace(line[idx+len(marker):])
-				msg = sanitizeLogMessage(msg)
-				return tag.Type, msg
+				// Extract message after the marker
+				afterMarker := idx + len(marker)
+				if afterMarker < len(line) {
+					msg := strings.TrimSpace(line[afterMarker:])
+					msg = sanitizeLogMessage(msg)
+					if msg != "" {
+						return tag.Type, msg
+					}
+				}
 			}
 		}
 	}

@@ -117,9 +117,9 @@ func (n *NotificationAdapter) convertBackupStatsToNotificationData(stats *Backup
 		cloudStatus = "disabled"
 	}
 
-	localStatusSummary := formatBackupStatusSummary(stats.LocalBackups, stats.MaxLocalBackups)
-	secondaryStatusSummary := formatBackupStatusSummary(stats.SecondaryBackups, stats.MaxSecondaryBackups)
-	cloudStatusSummary := formatBackupStatusSummary(stats.CloudBackups, stats.MaxCloudBackups)
+	localStatusSummary := formatBackupStatusSummary(stats.LocalRetentionPolicy, stats.LocalBackups, stats.MaxLocalBackups)
+	secondaryStatusSummary := formatBackupStatusSummary(stats.SecondaryRetentionPolicy, stats.SecondaryBackups, stats.MaxSecondaryBackups)
+	cloudStatusSummary := formatBackupStatusSummary(stats.CloudRetentionPolicy, stats.CloudBackups, stats.MaxCloudBackups)
 
 	// Email/Telegram status summaries
 	emailStatus := stats.EmailStatus
@@ -203,6 +203,19 @@ func (n *NotificationAdapter) convertBackupStatsToNotificationData(stats *Backup
 		LocalSpaceBytes:    stats.LocalFreeSpace,
 		LocalUsagePercent:  calculateUsagePercent(stats.LocalFreeSpace, stats.LocalTotalSpace),
 
+		// Local retention info
+		LocalRetentionPolicy:      stats.LocalRetentionPolicy,
+		LocalRetentionLimit:       stats.MaxLocalBackups,
+		LocalGFSDaily:             stats.LocalGFSDaily,
+		LocalGFSWeekly:            stats.LocalGFSWeekly,
+		LocalGFSMonthly:           stats.LocalGFSMonthly,
+		LocalGFSYearly:            stats.LocalGFSYearly,
+		LocalGFSCurrentDaily:      stats.LocalGFSCurrentDaily,
+		LocalGFSCurrentWeekly:     stats.LocalGFSCurrentWeekly,
+		LocalGFSCurrentMonthly:    stats.LocalGFSCurrentMonthly,
+		LocalGFSCurrentYearly:     stats.LocalGFSCurrentYearly,
+		LocalBackups:              stats.LocalBackups,
+
 		SecondaryEnabled:       stats.SecondaryEnabled,
 		SecondaryStatus:        secondaryStatus,
 		SecondaryStatusSummary: secondaryStatusSummary,
@@ -213,10 +226,36 @@ func (n *NotificationAdapter) convertBackupStatsToNotificationData(stats *Backup
 		SecondarySpaceBytes:    stats.SecondaryFreeSpace,
 		SecondaryUsagePercent:  calculateUsagePercent(stats.SecondaryFreeSpace, stats.SecondaryTotalSpace),
 
+		// Secondary retention info
+		SecondaryRetentionPolicy:      stats.SecondaryRetentionPolicy,
+		SecondaryRetentionLimit:       stats.MaxSecondaryBackups,
+		SecondaryGFSDaily:             stats.SecondaryGFSDaily,
+		SecondaryGFSWeekly:            stats.SecondaryGFSWeekly,
+		SecondaryGFSMonthly:           stats.SecondaryGFSMonthly,
+		SecondaryGFSYearly:            stats.SecondaryGFSYearly,
+		SecondaryGFSCurrentDaily:      stats.SecondaryGFSCurrentDaily,
+		SecondaryGFSCurrentWeekly:     stats.SecondaryGFSCurrentWeekly,
+		SecondaryGFSCurrentMonthly:    stats.SecondaryGFSCurrentMonthly,
+		SecondaryGFSCurrentYearly:     stats.SecondaryGFSCurrentYearly,
+		SecondaryBackups:              stats.SecondaryBackups,
+
 		CloudEnabled:       stats.CloudEnabled,
 		CloudStatus:        cloudStatus,
 		CloudStatusSummary: cloudStatusSummary,
 		CloudCount:         stats.CloudBackups,
+
+		// Cloud retention info
+		CloudRetentionPolicy:      stats.CloudRetentionPolicy,
+		CloudRetentionLimit:       stats.MaxCloudBackups,
+		CloudGFSDaily:             stats.CloudGFSDaily,
+		CloudGFSWeekly:            stats.CloudGFSWeekly,
+		CloudGFSMonthly:           stats.CloudGFSMonthly,
+		CloudGFSYearly:            stats.CloudGFSYearly,
+		CloudGFSCurrentDaily:      stats.CloudGFSCurrentDaily,
+		CloudGFSCurrentWeekly:     stats.CloudGFSCurrentWeekly,
+		CloudGFSCurrentMonthly:    stats.CloudGFSCurrentMonthly,
+		CloudGFSCurrentYearly:     stats.CloudGFSCurrentYearly,
+		CloudBackups:              stats.CloudBackups,
 
 		EmailStatus:    emailStatus,
 		TelegramStatus: telegramStatus,
@@ -276,7 +315,13 @@ func formatPercentString(percent float64) string {
 	return fmt.Sprintf("%.1f%%", percent)
 }
 
-func formatBackupStatusSummary(count, max int) string {
+func formatBackupStatusSummary(policy string, count, max int) string {
+	// GFS mode: show X/- (no fixed limit)
+	if policy == "gfs" {
+		return fmt.Sprintf("%d/-", count)
+	}
+
+	// Simple mode: show X/Y or X/?
 	if max <= 0 {
 		if count <= 0 {
 			return "0/?"

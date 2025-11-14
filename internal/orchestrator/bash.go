@@ -260,6 +260,35 @@ type BackupStats struct {
 	MaxSecondaryBackups int
 	MaxCloudBackups     int
 
+	// Retention policy info (for notifications)
+	LocalRetentionPolicy      string
+	LocalGFSDaily             int
+	LocalGFSWeekly            int
+	LocalGFSMonthly           int
+	LocalGFSYearly            int
+	LocalGFSCurrentDaily      int
+	LocalGFSCurrentWeekly     int
+	LocalGFSCurrentMonthly    int
+	LocalGFSCurrentYearly     int
+	SecondaryRetentionPolicy  string
+	SecondaryGFSDaily         int
+	SecondaryGFSWeekly        int
+	SecondaryGFSMonthly       int
+	SecondaryGFSYearly        int
+	SecondaryGFSCurrentDaily  int
+	SecondaryGFSCurrentWeekly int
+	SecondaryGFSCurrentMonthly int
+	SecondaryGFSCurrentYearly int
+	CloudRetentionPolicy      string
+	CloudGFSDaily             int
+	CloudGFSWeekly            int
+	CloudGFSMonthly           int
+	CloudGFSYearly            int
+	CloudGFSCurrentDaily      int
+	CloudGFSCurrentWeekly     int
+	CloudGFSCurrentMonthly    int
+	CloudGFSCurrentYearly     int
+
 	// Error/warning counts
 	ErrorCount   int
 	WarningCount int
@@ -918,6 +947,7 @@ func (o *Orchestrator) RunGoBackup(ctx context.Context, pType types.ProxmoxType,
 		}
 	}
 
+	fmt.Println()
 	o.logger.Debug("Go backup completed in %s", backup.FormatDuration(stats.Duration))
 
 	return stats, nil

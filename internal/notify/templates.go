@@ -214,9 +214,6 @@ func BuildEmailHTML(data *NotificationData) string {
 	html.WriteString(fmt.Sprintf("                    <p><strong>Total Issues:</strong> %d</p>\n", data.TotalIssues))
 	html.WriteString(fmt.Sprintf("                    <p><strong>Errors:</strong> %d</p>\n", data.ErrorCount))
 	html.WriteString(fmt.Sprintf("                    <p><strong>Warnings:</strong> %d</p>\n", data.WarningCount))
-	if data.LogFilePath != "" {
-		html.WriteString(fmt.Sprintf("                    <p><strong>Log:</strong> %s</p>\n", escapeHTML(data.LogFilePath)))
-	}
 	html.WriteString("                </div>\n")
 
 	if len(data.LogCategories) > 0 {
@@ -225,17 +222,20 @@ func BuildEmailHTML(data *NotificationData) string {
 		html.WriteString("                        <th style=\"text-align:left; padding:10px; background-color:#f2f2f2;\">Problem</th>\n")
 		html.WriteString("                        <th style=\"text-align:left; padding:10px; background-color:#f2f2f2;\">Type</th>\n")
 		html.WriteString("                        <th style=\"text-align:left; padding:10px; background-color:#f2f2f2;\">Count</th>\n")
-		html.WriteString("                        <th style=\"text-align:left; padding:10px; background-color:#f2f2f2;\">Example</th>\n")
 		html.WriteString("                    </tr>\n")
 		for _, cat := range data.LogCategories {
 			html.WriteString("                    <tr>\n")
 			html.WriteString(fmt.Sprintf("                        <td>%s</td>\n", escapeHTML(cat.Label)))
 			html.WriteString(fmt.Sprintf("                        <td>%s</td>\n", escapeHTML(cat.Type)))
 			html.WriteString(fmt.Sprintf("                        <td>%d</td>\n", cat.Count))
-			html.WriteString(fmt.Sprintf("                        <td>%s</td>\n", escapeHTML(cat.Example)))
 			html.WriteString("                    </tr>\n")
 		}
 		html.WriteString("                </table>\n")
+	}
+
+	// Show log file path after the table
+	if data.LogFilePath != "" {
+		html.WriteString(fmt.Sprintf("                <p style=\"font-size:13px; color:#666; margin-top:10px;\">Full log available at: %s</p>\n", escapeHTML(data.LogFilePath)))
 	}
 	html.WriteString("            </div>\n")
 
@@ -272,6 +272,7 @@ func BuildEmailHTML(data *NotificationData) string {
 func buildInfoTableRow(label, value string) string {
 	return fmt.Sprintf("                    <tr>\n                        <td>%s</td>\n                        <td>%s</td>\n                    </tr>\n", escapeHTML(label), escapeHTML(value))
 }
+
 
 func valueOrNA(value string) string {
 	if strings.TrimSpace(value) == "" {

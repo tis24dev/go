@@ -74,6 +74,19 @@ type NotificationData struct {
 	LocalSpaceBytes    uint64
 	LocalUsagePercent  float64
 
+	// Local retention info
+	LocalRetentionPolicy      string // "simple" or "gfs"
+	LocalRetentionLimit       int    // MAX_LOCAL_BACKUPS (simple mode)
+	LocalGFSDaily             int    // GFS limits
+	LocalGFSWeekly            int
+	LocalGFSMonthly           int
+	LocalGFSYearly            int
+	LocalGFSCurrentDaily      int // GFS current counts
+	LocalGFSCurrentWeekly     int
+	LocalGFSCurrentMonthly    int
+	LocalGFSCurrentYearly     int
+	LocalBackups              int // Total current backups
+
 	SecondaryEnabled       bool
 	SecondaryStatus        string
 	SecondaryStatusSummary string
@@ -84,10 +97,36 @@ type NotificationData struct {
 	SecondarySpaceBytes    uint64
 	SecondaryUsagePercent  float64
 
+	// Secondary retention info
+	SecondaryRetentionPolicy      string
+	SecondaryRetentionLimit       int
+	SecondaryGFSDaily             int
+	SecondaryGFSWeekly            int
+	SecondaryGFSMonthly           int
+	SecondaryGFSYearly            int
+	SecondaryGFSCurrentDaily      int
+	SecondaryGFSCurrentWeekly     int
+	SecondaryGFSCurrentMonthly    int
+	SecondaryGFSCurrentYearly     int
+	SecondaryBackups              int
+
 	CloudEnabled       bool
 	CloudStatus        string
 	CloudStatusSummary string
 	CloudCount         int
+
+	// Cloud retention info
+	CloudRetentionPolicy      string
+	CloudRetentionLimit       int
+	CloudGFSDaily             int
+	CloudGFSWeekly            int
+	CloudGFSMonthly           int
+	CloudGFSYearly            int
+	CloudGFSCurrentDaily      int
+	CloudGFSCurrentWeekly     int
+	CloudGFSCurrentMonthly    int
+	CloudGFSCurrentYearly     int
+	CloudBackups              int
 
 	// Email notification status (for Telegram messages)
 	EmailStatus    string

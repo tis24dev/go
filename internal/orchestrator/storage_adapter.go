@@ -137,7 +137,7 @@ func (s *StorageAdapter) Sync(ctx context.Context, stats *BackupStats) error {
 		}
 
 		if stats != nil {
-			s.applyStorageStats(storageStats, stats)
+			s.applyStorageStats(storageStats, retentionConfig, stats)
 		}
 	}
 
@@ -195,9 +195,24 @@ func formatBytes(bytes int64) string {
 	return fmt.Sprintf("%.1f %ciB", float64(bytes)/float64(div), "KMGTPE"[exp])
 }
 
-func (s *StorageAdapter) applyStorageStats(storageStats *storage.StorageStats, stats *BackupStats) {
+func (s *StorageAdapter) applyStorageStats(storageStats *storage.StorageStats, retentionConfig storage.RetentionConfig, stats *BackupStats) {
 	if storageStats == nil || stats == nil {
 		return
+	}
+
+	// Get current GFS stats if in GFS mode
+	var gfsStats map[storage.RetentionCategory]int
+	if retentionConfig.Policy == "gfs" {
+		// Get backups list for classification
+		if listable, ok := s.backend.(interface {
+			List(context.Context) ([]*types.BackupMetadata, error)
+		}); ok {
+			backups, err := listable.List(context.Background())
+			if err == nil && len(backups) > 0 {
+				classification := storage.ClassifyBackupsGFS(backups, retentionConfig)
+				gfsStats = storage.GetRetentionStats(classification)
+			}
+		}
 	}
 
 	switch s.backend.Location() {
@@ -205,6 +220,20 @@ func (s *StorageAdapter) applyStorageStats(storageStats *storage.StorageStats, s
 		stats.LocalBackups = storageStats.TotalBackups
 		stats.LocalFreeSpace = clampInt64ToUint64(storageStats.AvailableSpace)
 		stats.LocalTotalSpace = clampInt64ToUint64(storageStats.TotalSpace)
+		// Populate retention info
+		stats.LocalRetentionPolicy = retentionConfig.Policy
+		if retentionConfig.Policy == "gfs" {
+			stats.LocalGFSDaily = retentionConfig.Daily
+			stats.LocalGFSWeekly = retentionConfig.Weekly
+			stats.LocalGFSMonthly = retentionConfig.Monthly
+			stats.LocalGFSYearly = retentionConfig.Yearly
+			if gfsStats != nil {
+				stats.LocalGFSCurrentDaily = gfsStats[storage.CategoryDaily]
+				stats.LocalGFSCurrentWeekly = gfsStats[storage.CategoryWeekly]
+				stats.LocalGFSCurrentMonthly = gfsStats[storage.CategoryMonthly]
+				stats.LocalGFSCurrentYearly = gfsStats[storage.CategoryYearly]
+			}
+		}
 	case storage.LocationSecondary:
 		if !stats.SecondaryEnabled {
 			stats.SecondaryEnabled = true
@@ -212,11 +241,39 @@ func (s *StorageAdapter) applyStorageStats(storageStats *storage.StorageStats, s
 		stats.SecondaryBackups = storageStats.TotalBackups
 		stats.SecondaryFreeSpace = clampInt64ToUint64(storageStats.AvailableSpace)
 		stats.SecondaryTotalSpace = clampInt64ToUint64(storageStats.TotalSpace)
+		// Populate retention info
+		stats.SecondaryRetentionPolicy = retentionConfig.Policy
+		if retentionConfig.Policy == "gfs" {
+			stats.SecondaryGFSDaily = retentionConfig.Daily
+			stats.SecondaryGFSWeekly = retentionConfig.Weekly
+			stats.SecondaryGFSMonthly = retentionConfig.Monthly
+			stats.SecondaryGFSYearly = retentionConfig.Yearly
+			if gfsStats != nil {
+				stats.SecondaryGFSCurrentDaily = gfsStats[storage.CategoryDaily]
+				stats.SecondaryGFSCurrentWeekly = gfsStats[storage.CategoryWeekly]
+				stats.SecondaryGFSCurrentMonthly = gfsStats[storage.CategoryMonthly]
+				stats.SecondaryGFSCurrentYearly = gfsStats[storage.CategoryYearly]
+			}
+		}
 	case storage.LocationCloud:
 		if !stats.CloudEnabled {
 			stats.CloudEnabled = true
 		}
 		stats.CloudBackups = storageStats.TotalBackups
+		// Populate retention info
+		stats.CloudRetentionPolicy = retentionConfig.Policy
+		if retentionConfig.Policy == "gfs" {
+			stats.CloudGFSDaily = retentionConfig.Daily
+			stats.CloudGFSWeekly = retentionConfig.Weekly
+			stats.CloudGFSMonthly = retentionConfig.Monthly
+			stats.CloudGFSYearly = retentionConfig.Yearly
+			if gfsStats != nil {
+				stats.CloudGFSCurrentDaily = gfsStats[storage.CategoryDaily]
+				stats.CloudGFSCurrentWeekly = gfsStats[storage.CategoryWeekly]
+				stats.CloudGFSCurrentMonthly = gfsStats[storage.CategoryMonthly]
+				stats.CloudGFSCurrentYearly = gfsStats[storage.CategoryYearly]
+			}
+		}
 	}
 }
 
