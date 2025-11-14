@@ -1594,22 +1594,24 @@ func sanitizeEnvValue(value string) string {
 
 func buildSignature() string {
 	hash := executableHash()
+	buildTime := executableBuildTime()
+	formattedTime := ""
+	if !buildTime.IsZero() {
+		formattedTime = buildTime.Local().Format(time.RFC3339)
+	}
 	if info, ok := debug.ReadBuildInfo(); ok {
-		var revision, vcsTime string
+		var revision string
 		modified := ""
 		for _, setting := range info.Settings {
 			switch setting.Key {
 			case "vcs.revision":
 				revision = setting.Value
-			case "vcs.time":
-				vcsTime = setting.Value
 			case "vcs.modified":
 				if setting.Value == "true" {
 					modified = "*"
 				}
 			}
 		}
-		formattedTime := formatBuildTime(vcsTime)
 		if revision != "" {
 			shortRev := revision
 			if len(shortRev) > 9 {
@@ -1624,12 +1626,12 @@ func buildSignature() string {
 			}
 			return sig
 		}
-		if formattedTime != "" {
-			if hash != "" {
-				return fmt.Sprintf("%s hash=%s", formattedTime, truncateHash(hash))
-			}
-			return formattedTime
-		}
+	}
+	if formattedTime != "" && hash != "" {
+		return fmt.Sprintf("%s hash=%s", formattedTime, truncateHash(hash))
+	}
+	if formattedTime != "" {
+		return formattedTime
 	}
 	if hash != "" {
 		return fmt.Sprintf("hash=%s", truncateHash(hash))
@@ -1637,14 +1639,16 @@ func buildSignature() string {
 	return ""
 }
 
-func formatBuildTime(raw string) string {
-	if strings.TrimSpace(raw) == "" {
-		return ""
+func executableBuildTime() time.Time {
+	info := getExecInfo()
+	if info.ExecPath == "" {
+		return time.Time{}
 	}
-	if t, err := time.Parse(time.RFC3339, raw); err == nil {
-		return t.Local().Format(time.RFC3339)
+	stat, err := os.Stat(info.ExecPath)
+	if err != nil {
+		return time.Time{}
 	}
-	return raw
+	return stat.ModTime()
 }
 
 func executableHash() string {
