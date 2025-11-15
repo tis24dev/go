@@ -1794,7 +1794,7 @@ MAX_SECONDARY_BACKUPS=15
 MAX_CLOUD_BACKUPS=15
 
 # GFS Retention (attivato automaticamente se imposti RETENTION_*)
-RETENTION_DAILY=7        # Keep last 7 days
+RETENTION_DAILY=7        # Keep last 7 backups (daily tier)
 RETENTION_WEEKLY=4       # Keep 4 weekly backups
 RETENTION_MONTHLY=12     # Keep 12 monthly backups
 RETENTION_YEARLY=3       # Keep 3 yearly backups (0 = keep all)

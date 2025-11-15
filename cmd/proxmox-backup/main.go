@@ -154,6 +154,11 @@ func run() int {
 		_ = os.Setenv("BASE_DIR", autoBaseDir)
 	}
 
+	if err := ensureConfigExists(args.ConfigPath, bootstrap); err != nil {
+		bootstrap.Error("ERROR: %v", err)
+		return types.ExitConfigError.Int()
+	}
+
 	bootstrap.Printf("Loading configuration from: %s", args.ConfigPath)
 	cfg, err := config.LoadConfig(args.ConfigPath)
 	if err != nil {
@@ -1231,11 +1236,15 @@ func formatStorageInitSummary(name string, cfg *config.Config, location storage.
 			classification := storage.ClassifyBackupsGFS(backups, retentionConfig)
 			gfsStats := storage.GetRetentionStats(classification)
 
-			result += fmt.Sprintf("\n  Total: %d/-", stats.TotalBackups)
+			total := stats.TotalBackups
+			kept := total - gfsStats[storage.CategoryDelete]
+
+			result += fmt.Sprintf("\n  Total: %d/-", total)
 			result += fmt.Sprintf("\n  Daily: %d/%d", gfsStats[storage.CategoryDaily], retentionConfig.Daily)
 			result += fmt.Sprintf("\n  Weekly: %d/%d", gfsStats[storage.CategoryWeekly], retentionConfig.Weekly)
 			result += fmt.Sprintf("\n  Monthly: %d/%d", gfsStats[storage.CategoryMonthly], retentionConfig.Monthly)
 			result += fmt.Sprintf("\n  Yearly: %d/%d", gfsStats[storage.CategoryYearly], retentionConfig.Yearly)
+			result += fmt.Sprintf("\n  Kept (est.): %d, To delete (est.): %d", kept, gfsStats[storage.CategoryDelete])
 		} else {
 			// No backups yet - show configured limits
 			result += fmt.Sprintf("\n  Daily: 0/%d, Weekly: 0/%d, Monthly: 0/%d, Yearly: 0/%d",

@@ -995,6 +995,7 @@ func autoDetectPBSFingerprint() string {
 
 // extractFingerprintFromCert extracts SHA256 fingerprint from a certificate file
 func extractFingerprintFromCert(certPath string) string {
+	_ = certPath
 	// This would require crypto/x509 parsing - for now return empty
 	// The fingerprint is optional and commands will work without it on localhost
 	return ""

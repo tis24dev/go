@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -208,5 +209,37 @@ func TestSecondaryStorageStoreCopiesBackupAndAssociatedFiles(t *testing.T) {
 		if string(srcData) != string(destData) {
 			t.Fatalf("copied file %s mismatch", dest)
 		}
+	}
+}
+
+func TestClassifyBackupsGFSLimitsDailyCount(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+
+	var backups []*types.BackupMetadata
+	for i := 0; i < 5; i++ {
+		backups = append(backups, &types.BackupMetadata{
+			BackupFile: fmt.Sprintf("backup-%d", i),
+			Timestamp:  now.Add(-time.Duration(i) * time.Hour),
+		})
+	}
+
+	cfg := RetentionConfig{
+		Policy: "gfs",
+		Daily:  3,
+	}
+
+	classification := ClassifyBackupsGFS(backups, cfg)
+
+	countDaily := 0
+	for _, cat := range classification {
+		if cat == CategoryDaily {
+			countDaily++
+		}
+	}
+
+	if countDaily != 3 {
+		t.Fatalf("expected 3 daily backups, got %d", countDaily)
 	}
 }

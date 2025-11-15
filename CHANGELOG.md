@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Intelligent time-distributed backup retention** as alternative to simple count-based retention
 - **Automatic policy detection**: GFS mode activates when any `RETENTION_*` variable is set
 - **Four retention categories**:
-  - `RETENTION_DAILY`: Keep backups from last N days (most recent)
+  - `RETENTION_DAILY`: Keep last N backups (daily tier)
   - `RETENTION_WEEKLY`: Keep N weekly backups (1 per ISO week)
   - `RETENTION_MONTHLY`: Keep N monthly backups (1 per month)
   - `RETENTION_YEARLY`: Keep N yearly backups (1 per year, 0 = unlimited)

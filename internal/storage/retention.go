@@ -3,7 +3,6 @@ package storage
 import (
 	"fmt"
 	"sort"
-	"time"
 
 	"github.com/tis24dev/proxmox-backup/internal/config"
 	"github.com/tis24dev/proxmox-backup/internal/types"
@@ -17,8 +16,9 @@ type RetentionConfig struct {
 	// Simple retention: total number of backups to keep
 	MaxBackups int
 
-	// GFS retention: time-based distribution
-	Daily   int // Keep backups from last N days
+	// GFS retention: time-distributed, hierarchical (daily → weekly → monthly → yearly)
+	// Daily: keep the last N backups (newest first)
+	Daily   int // Keep last N backups as daily
 	Weekly  int // Keep N weekly backups (one per week)
 	Monthly int // Keep N monthly backups (one per month)
 	Yearly  int // Keep N yearly backups (one per year, 0 = keep all)
@@ -79,23 +79,34 @@ func ClassifyBackupsGFS(backups []*types.BackupMetadata, config RetentionConfig)
 	})
 
 	classification := make(map[*types.BackupMetadata]RetentionCategory)
-	now := time.Now()
 
-	// 1. DAILY: Keep all backups from last N days
-	if config.Daily > 0 {
-		cutoffDaily := now.AddDate(0, 0, -config.Daily)
-		for _, b := range backups {
-			if b.Timestamp.After(cutoffDaily) {
-				classification[b] = CategoryDaily
+	// 1. DAILY: Keep the last N backups (newest first)
+	dailyLimit := config.Daily
+	if dailyLimit < 0 {
+		dailyLimit = 0
+	}
+	dailyCount := 0
+	dailyCutIndex := len(backups)
+	if dailyLimit > 0 {
+		for i, b := range backups {
+			if dailyCount >= dailyLimit {
+				dailyCutIndex = i
+				break
 			}
+			classification[b] = CategoryDaily
+			dailyCount++
 		}
+	}
+	if dailyCount < dailyLimit {
+		dailyCutIndex = len(backups)
 	}
 
 	// 2. WEEKLY: Keep one backup per week (ISO week number)
-	// Only consider backups not already classified as daily
+	// Only consider backups older than the oldest daily and not already classified
 	if config.Weekly > 0 {
 		weeksSeen := make(map[string]bool)
-		for _, b := range backups {
+		for i := dailyCutIndex; i < len(backups); i++ {
+			b := backups[i]
 			if classification[b] != "" {
 				continue // Already classified
 			}
@@ -111,10 +122,11 @@ func ClassifyBackupsGFS(backups []*types.BackupMetadata, config RetentionConfig)
 	}
 
 	// 3. MONTHLY: Keep one backup per month
-	// Only consider backups not already classified
+	// Only consider backups older than the oldest daily and not already classified
 	if config.Monthly > 0 {
 		monthsSeen := make(map[string]bool)
-		for _, b := range backups {
+		for i := dailyCutIndex; i < len(backups); i++ {
+			b := backups[i]
 			if classification[b] != "" {
 				continue
 			}
@@ -132,7 +144,8 @@ func ClassifyBackupsGFS(backups []*types.BackupMetadata, config RetentionConfig)
 	// If Yearly == 0, keep all yearly backups (infinite retention)
 	if config.Yearly >= 0 {
 		yearsSeen := make(map[string]bool)
-		for _, b := range backups {
+		for i := dailyCutIndex; i < len(backups); i++ {
+			b := backups[i]
 			if classification[b] != "" {
 				continue
 			}

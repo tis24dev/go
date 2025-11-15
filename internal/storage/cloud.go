@@ -295,7 +295,8 @@ func (c *CloudStorage) checkRemoteAccessible(ctx context.Context) error {
 		}
 
 		if attempt < maxAttempts {
-			waitTime := time.Duration(attempt) * time.Second
+			// Exponential backoff: 2s, 4s, 8s, ...
+			waitTime := time.Duration(1<<uint(attempt)) * time.Second
 			c.logger.Debug("Cloud remote check attempt %d/%d failed: %v (retrying in %v)",
 				attempt, maxAttempts, err, waitTime)
 			c.sleep(waitTime)
@@ -997,11 +998,13 @@ func (c *CloudStorage) applyGFSRetention(ctx context.Context, backups []*types.B
 
 	// Get statistics
 	stats := GetRetentionStats(classification)
-	c.logger.Info("GFS classification → daily: %d/%d, weekly: %d/%d, monthly: %d/%d, yearly: %d/%d, to_delete: %d",
+	kept := len(backups) - stats[CategoryDelete]
+	c.logger.Info("GFS classification → daily: %d/%d, weekly: %d/%d, monthly: %d/%d, yearly: %d/%d, kept: %d, to_delete: %d",
 		stats[CategoryDaily], config.Daily,
 		stats[CategoryWeekly], config.Weekly,
 		stats[CategoryMonthly], config.Monthly,
 		stats[CategoryYearly], config.Yearly,
+		kept,
 		stats[CategoryDelete])
 
 	// Collect backups marked for deletion

@@ -286,7 +286,7 @@ MAX_CLOUD_BACKUPS=15
 **2. GFS Retention** - Distribuzione temporale intelligente:
 ```bash
 # Si attiva automaticamente quando imposti almeno una variabile RETENTION_*
-RETENTION_DAILY=7           # Mantieni ultimi 7 giorni
+RETENTION_DAILY=7           # Mantieni fino a 7 backup giornalieri recenti (nella finestra degli ultimi 7 giorni)
 RETENTION_WEEKLY=4          # Mantieni 4 backup settimanali (1 per settimana ISO)
 RETENTION_MONTHLY=12        # Mantieni 12 backup mensili (1 per mese)
 RETENTION_YEARLY=3          # Mantieni 3 backup annuali (1 per anno)

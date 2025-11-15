@@ -273,7 +273,7 @@ func (l *LocalStorage) Delete(ctx context.Context, backupFile string) error {
 		}
 	}
 
-	l.logger.Debug("Local storage: deleted backup and associated files: %s", filepath.Base(backupFile))
+	l.logger.Info("Local storage: deleted backup and associated files: %s", filepath.Base(backupFile))
 	return nil
 }
 
@@ -319,11 +319,13 @@ func (l *LocalStorage) applyGFSRetention(ctx context.Context, backups []*types.B
 
 	// Get statistics
 	stats := GetRetentionStats(classification)
-	l.logger.Info("GFS classification → daily: %d/%d, weekly: %d/%d, monthly: %d/%d, yearly: %d/%d, to_delete: %d",
+	kept := len(backups) - stats[CategoryDelete]
+	l.logger.Info("GFS classification → daily: %d/%d, weekly: %d/%d, monthly: %d/%d, yearly: %d/%d, kept: %d, to_delete: %d",
 		stats[CategoryDaily], config.Daily,
 		stats[CategoryWeekly], config.Weekly,
 		stats[CategoryMonthly], config.Monthly,
 		stats[CategoryYearly], config.Yearly,
+		kept,
 		stats[CategoryDelete])
 
 	// Delete backups marked for deletion
