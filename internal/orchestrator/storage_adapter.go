@@ -124,7 +124,20 @@ func (s *StorageAdapter) Sync(ctx context.Context, stats *BackupStats) error {
 			s.logger.Warning("WARNING: %s retention failed: %v", s.backend.Name(), err)
 			hasWarnings = true
 		} else if deleted > 0 {
-			s.logger.Info("✓ %s: Deleted %d old backups", s.backend.Name(), deleted)
+			if reporter, ok := s.backend.(storage.RetentionReporter); ok {
+				summary := reporter.LastRetentionSummary()
+				backupsDeleted := summary.BackupsDeleted
+				if backupsDeleted == 0 {
+					backupsDeleted = deleted
+				}
+				logSuffix := ""
+				if summary.LogsDeleted > 0 {
+					logSuffix = fmt.Sprintf(" (logs deleted: %d)", summary.LogsDeleted)
+				}
+				s.logger.Info("✓ %s: Deleted %d old backups%s", s.backend.Name(), backupsDeleted, logSuffix)
+			} else {
+				s.logger.Info("✓ %s: Deleted %d old backups", s.backend.Name(), deleted)
+			}
 		}
 	}
 
@@ -177,14 +190,14 @@ func (s *StorageAdapter) logRetentionPolicyDetails(cfg storage.RetentionConfig) 
 		return
 	}
 	if cfg.Policy == "gfs" {
-		s.logger.Info("  Policy: GFS (daily=%d, weekly=%d, monthly=%d, yearly=%d)",
+		s.logger.Debug("  Policy: GFS (daily=%d, weekly=%d, monthly=%d, yearly=%d)",
 			cfg.Daily, cfg.Weekly, cfg.Monthly, cfg.Yearly)
 		return
 	}
 	if cfg.MaxBackups > 0 {
-		s.logger.Info("  Policy: simple (keep %d newest)", cfg.MaxBackups)
+		s.logger.Debug("  Policy: simple (keep %d newest)", cfg.MaxBackups)
 	} else {
-		s.logger.Skip("  Policy: simple (disabled)")
+		s.logger.Debug("  Policy: simple (disabled)")
 	}
 }
 

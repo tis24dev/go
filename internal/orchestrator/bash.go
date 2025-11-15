@@ -362,6 +362,42 @@ func (o *Orchestrator) logStep(step int, format string, args ...interface{}) {
 	o.logger.Step("%s", message)
 }
 
+func (o *Orchestrator) logGlobalRetentionPolicy() {
+	if o == nil || o.logger == nil || o.cfg == nil {
+		return
+	}
+
+	// If GFS is enabled globally, policy is the same for all storage paths
+	if o.cfg.IsGFSRetentionEnabled() {
+		o.logger.Info("  Policy: GFS (daily=%d, weekly=%d, monthly=%d, yearly=%d)",
+			o.cfg.RetentionDaily, o.cfg.RetentionWeekly, o.cfg.RetentionMonthly, o.cfg.RetentionYearly)
+		return
+	}
+
+	// Simple (count-based) retention: may vary per path, summarize compactly
+	local := o.cfg.LocalRetentionDays
+	secondary := o.cfg.SecondaryRetentionDays
+	cloud := o.cfg.CloudRetentionDays
+
+	if local == 0 && secondary == 0 && cloud == 0 {
+		o.logger.Info("  Policy: simple (disabled)")
+		return
+	}
+
+	parts := make([]string, 0, 3)
+	if local > 0 {
+		parts = append(parts, fmt.Sprintf("local=%d", local))
+	}
+	if secondary > 0 {
+		parts = append(parts, fmt.Sprintf("secondary=%d", secondary))
+	}
+	if cloud > 0 {
+		parts = append(parts, fmt.Sprintf("cloud=%d", cloud))
+	}
+
+	o.logger.Info("  Policy: simple (%s)", strings.Join(parts, ", "))
+}
+
 func (o *Orchestrator) SetForceNewAgeRecipient(force bool) {
 	o.forceNewAgeRecipient = force
 	if force {
@@ -580,8 +616,6 @@ func (o *Orchestrator) RunGoBackup(ctx context.Context, pType types.ProxmoxType,
 		CompressionThreads:       o.compressionThreads,
 		LocalPath:                o.backupPath,
 		LocalStatus:              "ok",
-		SecondaryStatus:          "disabled",
-		CloudStatus:              "disabled",
 		EmailStatus:              "ok",
 		TelegramStatus:           o.describeTelegramConfig(),
 		ServerID:                 o.serverID,
@@ -605,15 +639,15 @@ func (o *Orchestrator) RunGoBackup(ctx context.Context, pType types.ProxmoxType,
 		}
 	}
 
-	if stats.SecondaryEnabled && strings.TrimSpace(stats.SecondaryStatus) == "" {
+	if stats.SecondaryEnabled {
 		stats.SecondaryStatus = "ok"
-	} else if !stats.SecondaryEnabled {
+	} else {
 		stats.SecondaryStatus = "disabled"
 	}
 
-	if stats.CloudEnabled && strings.TrimSpace(stats.CloudStatus) == "" {
+	if stats.CloudEnabled {
 		stats.CloudStatus = "ok"
-	} else if !stats.CloudEnabled {
+	} else {
 		stats.CloudStatus = "disabled"
 	}
 
@@ -631,17 +665,12 @@ func (o *Orchestrator) RunGoBackup(ctx context.Context, pType types.ProxmoxType,
 	}
 	defer func() {
 		if registry == nil {
-			if err := os.RemoveAll(tempDir); err != nil {
-				o.logger.Warning("Failed to remove temp directory %s: %v", tempDir, err)
+			if cleanupErr := os.RemoveAll(tempDir); cleanupErr != nil {
+				o.logger.Warning("Failed to remove temp directory %s: %v", tempDir, cleanupErr)
 			}
 			return
 		}
-		msg := fmt.Sprintf("Temporary workspace preserved at %s (will be removed at the next startup)", tempDir)
-		if err != nil {
-			o.logger.Warning("%s", msg)
-		} else {
-			o.logger.Debug("%s", msg)
-		}
+		o.logger.Debug("Temporary workspace preserved at %s (will be removed at the next startup)", tempDir)
 	}()
 
 	// Create marker file for parity with Bash cleanup guarantees
@@ -697,12 +726,12 @@ func (o *Orchestrator) RunGoBackup(ctx context.Context, pType types.ProxmoxType,
 
 	// Get collection statistics
 	collStats := collector.GetStats()
-	stats.FilesCollected = collStats.FilesProcessed
-	stats.FilesFailed = collStats.FilesFailed
-	stats.DirsCreated = collStats.DirsCreated
+	stats.FilesCollected = int(collStats.FilesProcessed)
+	stats.FilesFailed = int(collStats.FilesFailed)
+	stats.DirsCreated = int(collStats.DirsCreated)
 	stats.BytesCollected = collStats.BytesCollected
-	stats.FilesIncluded = collStats.FilesProcessed
-	stats.FilesMissing = collStats.FilesFailed
+	stats.FilesIncluded = int(collStats.FilesProcessed)
+	stats.FilesMissing = int(collStats.FilesFailed)
 	stats.UncompressedSize = collStats.BytesCollected
 
 	if err := o.writeBackupMetadata(tempDir, stats); err != nil {
@@ -985,6 +1014,7 @@ func (o *Orchestrator) RunGoBackup(ctx context.Context, pType types.ProxmoxType,
 	} else {
 		fmt.Println()
 		o.logStep(6, "Dispatching archive to %d storage target(s)", len(o.storageTargets))
+		o.logGlobalRetentionPolicy()
 	}
 
 	if !o.dryRun {

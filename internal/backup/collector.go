@@ -24,9 +24,9 @@ import (
 
 // CollectionStats tracks statistics during backup collection
 type CollectionStats struct {
-	FilesProcessed int
-	FilesFailed    int
-	DirsCreated    int
+	FilesProcessed int64
+	FilesFailed    int64
+	DirsCreated    int64
 	BytesCollected int64
 }
 
@@ -52,30 +52,22 @@ type Collector struct {
 }
 
 func (c *Collector) incFilesProcessed() {
-	c.statsMu.Lock()
-	c.stats.FilesProcessed++
-	c.statsMu.Unlock()
+	atomic.AddInt64(&c.stats.FilesProcessed, 1)
 }
 
 func (c *Collector) incFilesFailed() {
-	c.statsMu.Lock()
-	c.stats.FilesFailed++
-	c.statsMu.Unlock()
+	atomic.AddInt64(&c.stats.FilesFailed, 1)
 }
 
 func (c *Collector) incDirsCreated() {
-	c.statsMu.Lock()
-	c.stats.DirsCreated++
-	c.statsMu.Unlock()
+	atomic.AddInt64(&c.stats.DirsCreated, 1)
 }
 
 func (c *Collector) addBytesCollected(delta int64) {
 	if delta == 0 {
 		return
 	}
-	c.statsMu.Lock()
-	c.stats.BytesCollected += delta
-	c.statsMu.Unlock()
+	atomic.AddInt64(&c.stats.BytesCollected, delta)
 }
 
 // CollectorConfig holds configuration for backup collection
@@ -700,11 +692,7 @@ func (c *Collector) safeCmdOutput(ctx context.Context, cmd, output, description 
 		c.incFilesFailed()
 		return fmt.Errorf("failed to create output file: %w", err)
 	}
-	defer func() {
-		if outFile != nil {
-			_ = outFile.Close()
-		}
-	}()
+	defer func() { _ = outFile.Close() }()
 
 	var outputBuf bytes.Buffer
 	multiWriter := io.MultiWriter(outFile, &outputBuf)
@@ -715,7 +703,6 @@ func (c *Collector) safeCmdOutput(ctx context.Context, cmd, output, description 
 		if closeErr := outFile.Close(); closeErr != nil {
 			c.logger.Debug("Failed to close output file for %s: %v", description, closeErr)
 		}
-		outFile = nil
 		if removeErr := os.Remove(output); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
 			c.logger.Debug("Failed to remove incomplete output %s: %v", output, removeErr)
 		}

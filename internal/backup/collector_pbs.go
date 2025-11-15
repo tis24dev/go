@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -858,6 +859,7 @@ func (c *Collector) getDatastoreList(ctx context.Context) ([]pbsDatastore, error
 				existing[ds.Path] = struct{}{}
 			}
 		}
+		validName := regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 		for idx, override := range c.config.PBSDatastorePaths {
 			override = strings.TrimSpace(override)
 			if override == "" {
@@ -866,8 +868,8 @@ func (c *Collector) getDatastoreList(ctx context.Context) ([]pbsDatastore, error
 			if _, ok := existing[override]; ok {
 				continue
 			}
-			name := filepath.Base(override)
-			if name == "" || name == "." || name == string(os.PathSeparator) {
+			name := filepath.Base(filepath.Clean(override))
+			if name == "" || name == "." || name == string(os.PathSeparator) || !validName.MatchString(name) {
 				name = fmt.Sprintf("datastore_%d", idx+1)
 			}
 			datastores = append(datastores, pbsDatastore{

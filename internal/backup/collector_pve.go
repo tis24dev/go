@@ -48,16 +48,11 @@ func (c *Collector) CollectPVEConfigs(ctx context.Context) error {
 	c.logger.Debug("Validating PVE environment and cluster state prior to collection")
 
 	pveConfigPath := c.effectivePVEConfigPath()
-	if statErr := func() error {
-		if _, err := os.Stat(pveConfigPath); err != nil {
-			return err
-		}
-		return nil
-	}(); statErr != nil {
-		if errors.Is(statErr, os.ErrNotExist) {
+	if _, err := os.Stat(pveConfigPath); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("not a PVE system: %s not found", pveConfigPath)
 		}
-		return fmt.Errorf("failed to access PVE config path %s: %w", pveConfigPath, statErr)
+		return fmt.Errorf("failed to access PVE config path %s: %w", pveConfigPath, err)
 	}
 	c.logger.Debug("%s detected, continuing with PVE collection", pveConfigPath)
 

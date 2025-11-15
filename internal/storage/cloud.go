@@ -38,6 +38,7 @@ type CloudStorage struct {
 	execCommand    func(ctx context.Context, name string, args ...string) ([]byte, error)
 	lookPath       func(string) (string, error)
 	sleep          func(time.Duration)
+	lastRet        RetentionSummary
 }
 
 func (c *CloudStorage) remoteLabel() string {
@@ -918,8 +919,13 @@ func (c *CloudStorage) List(ctx context.Context) ([]*types.BackupMetadata, error
 
 // Delete removes a backup file from cloud storage
 func (c *CloudStorage) Delete(ctx context.Context, backupFile string) error {
+	_, err := c.deleteBackupInternal(ctx, backupFile)
+	return err
+}
+
+func (c *CloudStorage) deleteBackupInternal(ctx context.Context, backupFile string) (bool, error) {
 	if err := ctx.Err(); err != nil {
-		return err
+		return false, err
 	}
 
 	filename := filepath.Base(backupFile)
@@ -940,7 +946,7 @@ func (c *CloudStorage) Delete(ctx context.Context, backupFile string) error {
 		}
 	}
 
-	var deleteErr error
+	failedFiles := make([]string, 0)
 
 	// Delete all files
 	for _, f := range filesToDelete {
@@ -955,45 +961,43 @@ func (c *CloudStorage) Delete(ctx context.Context, backupFile string) error {
 				filepath.Base(f),
 				err,
 				strings.TrimSpace(string(output)))
-			if deleteErr == nil {
-				deleteErr = fmt.Errorf("failed to delete one or more cloud backup files")
-			}
+			failedFiles = append(failedFiles, filepath.Base(f))
 			// Continue with other files
 		}
 	}
 
 	// Best-effort: delete associated cloud log file for this backup
-	c.deleteAssociatedLog(ctx, backupFile)
+	logDeleted := c.deleteAssociatedLog(ctx, backupFile)
 
-	if deleteErr != nil {
-		return deleteErr
+	if len(failedFiles) > 0 {
+		return logDeleted, fmt.Errorf("failed to delete %d file(s): %v", len(failedFiles), failedFiles)
 	}
 
-	c.logger.Info("Deleted cloud backup: %s", filename)
-	return nil
+	c.logger.Debug("Deleted cloud backup: %s", filename)
+	return logDeleted, nil
 }
 
 // deleteAssociatedLog attempts to remove the cloud log file corresponding to a backup.
 // It is best-effort and never returns an error to the caller.
-func (c *CloudStorage) deleteAssociatedLog(ctx context.Context, backupFile string) {
+func (c *CloudStorage) deleteAssociatedLog(ctx context.Context, backupFile string) bool {
 	if c == nil || c.config == nil {
-		return
+		return false
 	}
 
 	base := strings.TrimSpace(c.config.CloudLogPath)
 	if base == "" {
-		return
+		return false
 	}
 
 	host, ts, ok := extractLogKeyFromBackup(backupFile)
 	if !ok {
-		return
+		return false
 	}
 
 	logName := fmt.Sprintf("backup-%s-%s.log", host, ts)
 	cloudPath := cloudLogPath(base, logName)
 	if strings.TrimSpace(cloudPath) == "" {
-		return
+		return false
 	}
 
 	args := []string{"rclone", "delete", cloudPath}
@@ -1005,10 +1009,41 @@ func (c *CloudStorage) deleteAssociatedLog(ctx context.Context, backupFile strin
 			c.logger.Debug("Cloud logs: delete output for %s: %s", cloudPath, msg)
 		}
 		c.logger.Warning("WARNING: Cloud logs - failed to delete %s: %v", cloudPath, err)
-		return
+		return false
 	}
 
-	c.logger.Info("Cloud logs: deleted log %s", cloudPath)
+	c.logger.Debug("Cloud logs: deleted log %s", cloudPath)
+	return true
+}
+
+func (c *CloudStorage) countLogFiles(ctx context.Context) int {
+	if c == nil || c.config == nil {
+		return -1
+	}
+	base := strings.TrimSpace(c.config.CloudLogPath)
+	if base == "" {
+		return 0
+	}
+
+	args := []string{"rclone", "lsf", base, "--files-only"}
+	output, err := c.exec(ctx, args[0], args[1:]...)
+	if err != nil {
+		c.logger.Debug("Cloud logs: failed to count log files at %s: %v", base, err)
+		return -1
+	}
+
+	count := 0
+	lines := strings.Split(string(output), "\n")
+	for _, line := range lines {
+		name := strings.TrimSpace(line)
+		if name == "" || strings.HasSuffix(name, "/") {
+			continue
+		}
+		if strings.HasPrefix(name, "backup-") && strings.HasSuffix(name, ".log") {
+			count++
+		}
+	}
+	return count
 }
 
 // cloudLogPath builds the full cloud log path, mirroring buildCloudLogDestination logic.
@@ -1064,7 +1099,7 @@ func (c *CloudStorage) ApplyRetention(ctx context.Context, config RetentionConfi
 
 // applyGFSRetention applies GFS (Grandfather-Father-Son) retention policy
 func (c *CloudStorage) applyGFSRetention(ctx context.Context, backups []*types.BackupMetadata, config RetentionConfig) (int, error) {
-	c.logger.Info("Applying GFS retention policy (daily=%d, weekly=%d, monthly=%d, yearly=%d)",
+	c.logger.Debug("Applying GFS retention policy (daily=%d, weekly=%d, monthly=%d, yearly=%d)",
 		config.Daily, config.Weekly, config.Monthly, config.Yearly)
 
 	// Classify backups according to GFS scheme
@@ -1073,7 +1108,7 @@ func (c *CloudStorage) applyGFSRetention(ctx context.Context, backups []*types.B
 	// Get statistics
 	stats := GetRetentionStats(classification)
 	kept := len(backups) - stats[CategoryDelete]
-	c.logger.Info("GFS classification → daily: %d/%d, weekly: %d/%d, monthly: %d/%d, yearly: %d/%d, kept: %d, to_delete: %d",
+	c.logger.Debug("GFS classification → daily: %d/%d, weekly: %d/%d, monthly: %d/%d, yearly: %d/%d, kept: %d, to_delete: %d",
 		stats[CategoryDaily], config.Daily,
 		stats[CategoryWeekly], config.Weekly,
 		stats[CategoryMonthly], config.Monthly,
@@ -1090,7 +1125,7 @@ func (c *CloudStorage) applyGFSRetention(ctx context.Context, backups []*types.B
 	}
 
 	// Delete in batches to avoid API rate limits
-	return c.deleteBatched(ctx, toDelete)
+	return c.deleteBatched(ctx, toDelete, len(backups))
 }
 
 // applySimpleRetention applies simple count-based retention policy
@@ -1117,14 +1152,16 @@ func (c *CloudStorage) applySimpleRetention(ctx context.Context, backups []*type
 	oldBackups := backups[maxBackups:]
 
 	// Delete in batches to avoid API rate limits
-	return c.deleteBatched(ctx, oldBackups)
+	return c.deleteBatched(ctx, oldBackups, totalBackups)
 }
 
 // deleteBatched deletes backups in batches to avoid API rate limits
-func (c *CloudStorage) deleteBatched(ctx context.Context, backups []*types.BackupMetadata) (int, error) {
+func (c *CloudStorage) deleteBatched(ctx context.Context, backups []*types.BackupMetadata, totalBackups int) (int, error) {
 	deleted := 0
+	logsDeleted := 0
 	batchSize := c.config.CloudBatchSize
 	batchPause := time.Duration(c.config.CloudBatchPause) * time.Second
+	initialLogs := c.countLogFiles(ctx)
 
 	for i, backup := range backups {
 		if err := ctx.Err(); err != nil {
@@ -1135,23 +1172,57 @@ func (c *CloudStorage) deleteBatched(ctx context.Context, backups []*types.Backu
 			backup.BackupFile,
 			backup.Timestamp.Format("2006-01-02 15:04:05"))
 
-		if err := c.Delete(ctx, backup.BackupFile); err != nil {
+		logDeleted, err := c.deleteBackupInternal(ctx, backup.BackupFile)
+		if err != nil {
 			c.logger.Warning("WARNING: Cloud storage - failed to delete %s: %v", backup.BackupFile, err)
 			continue
 		}
 
 		deleted++
+		if logDeleted {
+			logsDeleted++
+		}
 
 		// Pause after each batch to avoid API rate limits
-		if deleted%batchSize == 0 && i < len(backups)-1 {
+		if batchSize > 0 && deleted%batchSize == 0 && i < len(backups)-1 {
 			c.logger.Debug("Batch of %d deletions completed, pausing for %v to avoid API rate limits",
 				batchSize, batchPause)
 			c.sleep(batchPause)
 		}
 	}
 
-	c.logger.Info("Cloud storage retention applied: deleted %d backups", deleted)
+	remaining := totalBackups - deleted
+	if remaining < 0 {
+		remaining = 0
+	}
+
+	if logsRemaining, ok := computeRemaining(initialLogs, logsDeleted); ok {
+		c.logger.Debug("Cloud storage retention applied: deleted %d backups (logs deleted: %d), %d backups remaining (%d logs remaining)",
+			deleted, logsDeleted, remaining, logsRemaining)
+		c.lastRet = RetentionSummary{
+			BackupsDeleted:   deleted,
+			BackupsRemaining: remaining,
+			LogsDeleted:      logsDeleted,
+			LogsRemaining:    logsRemaining,
+			HasLogInfo:       true,
+		}
+	} else {
+		c.logger.Debug("Cloud storage retention applied: deleted %d backups (logs deleted: %d), %d backups remaining",
+			deleted, logsDeleted, remaining)
+		c.lastRet = RetentionSummary{
+			BackupsDeleted:   deleted,
+			BackupsRemaining: remaining,
+			LogsDeleted:      logsDeleted,
+			HasLogInfo:       false,
+		}
+	}
+
 	return deleted, nil
+}
+
+// LastRetentionSummary returns the latest retention summary.
+func (c *CloudStorage) LastRetentionSummary() RetentionSummary {
+	return c.lastRet
 }
 
 // GetStats returns storage statistics

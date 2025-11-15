@@ -535,6 +535,8 @@ func run() int {
 		logging.Skip("Path Cloud: disabled")
 	}
 
+	fmt.Println()
+
 	// Initialize notification channels
 	logging.Step("Initializing notification channels")
 
@@ -812,30 +814,6 @@ func run() int {
 	fmt.Println("Status: Phase 5.1 Notifications")
 	fmt.Println("===========================================")
 	fmt.Println()
-	fmt.Println("Phase 2 (Complete):")
-	fmt.Println("  ✓ Environment detection")
-	fmt.Println("  ✓ CLI argument parsing")
-	fmt.Println("  ✓ Hybrid orchestrator")
-	fmt.Println("  ✓ Configuration parser")
-	fmt.Println("  ✓ Signal handling")
-	fmt.Println()
-	fmt.Println("Phase 3 (Core):")
-	fmt.Println("  ✓ Pre-backup validation checks")
-	fmt.Println("  ✓ Disk space verification")
-	fmt.Println("  ✓ Lock file management")
-	fmt.Println("  ✓ Permission checks")
-	if useGoPipeline {
-		fmt.Println("  ✓ Go backup pipeline (collect → archive → verify)")
-		fmt.Println("  ✓ Statistics & JSON report")
-	} else {
-		fmt.Println("  → Go backup pipeline disabilitato (ENABLE_GO_BACKUP=false)")
-		fmt.Println("  ✓ Legacy bash orchestrator attivo")
-	}
-	fmt.Println()
-	fmt.Println("Phase 4 (Collection & Storage):")
-	fmt.Println("  ✓ 4.1 - Collection (PVE/PBS/System)")
-	fmt.Println("  ✓ 4.2 - Storage (Local/Secondary/Cloud)")
-	fmt.Println()
 	fmt.Println("Phase 5 (Notifications & Metrics):")
 	fmt.Println("  ✓ 5.1 - Notifications (Telegram/Email)")
 	fmt.Println("  → 5.2 - Metrics (Prometheus)")
@@ -850,6 +828,10 @@ func run() int {
 	fmt.Println("  make build         - Build binary")
 	fmt.Println("  --help             - Show all options")
 	fmt.Println("  --dry-run          - Test without changes")
+	fmt.Println("  --install          - Re-run interactive installation/setup")
+	fmt.Println("  --newkey           - Generate a new encryption key for backups")
+	fmt.Println("  --decrypt          - Decrypt an existing backup archive")
+	fmt.Println("  --restore          - Restore data from a decrypted backup")
 	fmt.Println()
 
 	return finalExitCode
@@ -1265,10 +1247,15 @@ func logStorageInitSummary(summary string) {
 		return
 	}
 	for _, line := range strings.Split(summary, "\n") {
-		if strings.TrimSpace(line) == "" {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
 			continue
 		}
-		logging.Info("%s", line)
+		if strings.Contains(trimmed, "Kept (est.):") {
+			logging.Debug("%s", line)
+		} else {
+			logging.Info("%s", line)
+		}
 	}
 }
 

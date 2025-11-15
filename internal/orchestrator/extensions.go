@@ -117,7 +117,7 @@ func (o *Orchestrator) dispatchPostBackup(ctx context.Context, stats *BackupStat
 
 	// Phase 3: Close log file and dispatch to storage/rotation
 	fmt.Println()
-	o.logStep(8, "Log file management - close, copy, and rotate")
+	o.logStep(8, "Log file management")
 	logFilePath := o.logger.GetLogFilePath()
 	if logFilePath != "" {
 		o.logger.Info("Closing log file: %s", logFilePath)

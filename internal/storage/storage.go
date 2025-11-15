@@ -101,6 +101,21 @@ type Storage interface {
 	GetStats(ctx context.Context) (*StorageStats, error)
 }
 
+// RetentionSummary captures what happened during the last retention run.
+type RetentionSummary struct {
+	BackupsDeleted   int
+	BackupsRemaining int
+	LogsDeleted      int
+	LogsRemaining    int
+	HasLogInfo       bool
+}
+
+// RetentionReporter can be implemented by storage backends that expose details
+// about the most recent retention run (e.g., log counts).
+type RetentionReporter interface {
+	LastRetentionSummary() RetentionSummary
+}
+
 // StorageStats contains statistics about a storage location
 type StorageStats struct {
 	TotalBackups   int

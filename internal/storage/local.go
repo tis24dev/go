@@ -1,8 +1,11 @@
 package storage
 
 import (
+	"archive/tar"
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/tis24dev/proxmox-backup/internal/backup"
 	"github.com/tis24dev/proxmox-backup/internal/config"
 	"github.com/tis24dev/proxmox-backup/internal/logging"
 	"github.com/tis24dev/proxmox-backup/internal/types"
@@ -23,6 +27,7 @@ type LocalStorage struct {
 	basePath   string
 	fsDetector *FilesystemDetector
 	fsInfo     *FilesystemInfo
+	lastRet    RetentionSummary
 }
 
 // NewLocalStorage creates a new local storage instance
@@ -196,6 +201,12 @@ func (l *LocalStorage) List(ctx context.Context) ([]*types.BackupMetadata, error
 			metadata = &types.BackupMetadata{
 				BackupFile: match,
 			}
+			if stat, statErr := os.Stat(match); statErr == nil {
+				metadata.Timestamp = stat.ModTime()
+				metadata.Size = stat.Size()
+			} else {
+				l.logger.Debug("Failed to stat %s after metadata load failure: %v", match, statErr)
+			}
 		}
 
 		backups = append(backups, metadata)
@@ -211,31 +222,114 @@ func (l *LocalStorage) List(ctx context.Context) ([]*types.BackupMetadata, error
 
 // loadMetadata loads metadata for a backup file
 func (l *LocalStorage) loadMetadata(backupFile string) (*types.BackupMetadata, error) {
-	metadataFile := backupFile + ".metadata"
-	if !l.config.BundleAssociatedFiles {
-		if _, err := os.Stat(metadataFile); err != nil {
-			return nil, err
+	if strings.HasSuffix(backupFile, ".bundle.tar") {
+		return l.loadMetadataFromBundle(backupFile)
+	}
+
+	// When bundles are enabled, prefer reading metadata from the bundle
+	if l != nil && l.config != nil && l.config.BundleAssociatedFiles {
+		bundlePath := backupFile + ".bundle.tar"
+		if _, err := os.Stat(bundlePath); err == nil {
+			return l.loadMetadataFromBundle(bundlePath)
 		}
 	}
 
-	// TODO: Implement metadata loading from JSON file
-	// For now, return minimal metadata
-	stat, err := os.Stat(backupFile)
+	metadataFile := backupFile + ".metadata"
+	if _, err := os.Stat(metadataFile); err != nil {
+		return nil, err
+	}
+
+	manifest, err := backup.LoadManifest(metadataFile)
 	if err != nil {
 		return nil, err
 	}
 
-	return &types.BackupMetadata{
-		BackupFile: backupFile,
-		Timestamp:  stat.ModTime(),
-		Size:       stat.Size(),
-	}, nil
+	metadata := &types.BackupMetadata{
+		BackupFile:  backupFile,
+		Timestamp:   manifest.CreatedAt,
+		Size:        manifest.ArchiveSize,
+		Checksum:    manifest.SHA256,
+		ProxmoxType: types.ProxmoxType(manifest.ProxmoxType),
+		Compression: types.CompressionType(manifest.CompressionType),
+		Version:     manifest.ScriptVersion,
+	}
+
+	if metadata.Timestamp.IsZero() || metadata.Size == 0 {
+		if stat, statErr := os.Stat(backupFile); statErr == nil {
+			if metadata.Timestamp.IsZero() {
+				metadata.Timestamp = stat.ModTime()
+			}
+			if metadata.Size == 0 {
+				metadata.Size = stat.Size()
+			}
+		}
+	}
+
+	return metadata, nil
+}
+
+func (l *LocalStorage) loadMetadataFromBundle(bundlePath string) (*types.BackupMetadata, error) {
+	file, err := os.Open(bundlePath)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	tr := tar.NewReader(file)
+	expectedName := strings.TrimSuffix(filepath.Base(bundlePath), ".bundle.tar") + ".metadata"
+
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			return nil, fmt.Errorf("metadata %s not found in bundle %s", expectedName, filepath.Base(bundlePath))
+		}
+		if err != nil {
+			return nil, fmt.Errorf("read bundle %s: %w", filepath.Base(bundlePath), err)
+		}
+
+		if filepath.Base(hdr.Name) != expectedName {
+			continue
+		}
+
+		var manifest backup.Manifest
+		if err := json.NewDecoder(tr).Decode(&manifest); err != nil {
+			return nil, fmt.Errorf("parse manifest from bundle %s: %w", filepath.Base(bundlePath), err)
+		}
+
+		metadata := &types.BackupMetadata{
+			BackupFile:  bundlePath,
+			Timestamp:   manifest.CreatedAt,
+			Size:        manifest.ArchiveSize,
+			Checksum:    manifest.SHA256,
+			ProxmoxType: types.ProxmoxType(manifest.ProxmoxType),
+			Compression: types.CompressionType(manifest.CompressionType),
+			Version:     manifest.ScriptVersion,
+		}
+
+		if metadata.Timestamp.IsZero() || metadata.Size == 0 {
+			if stat, statErr := os.Stat(bundlePath); statErr == nil {
+				if metadata.Timestamp.IsZero() {
+					metadata.Timestamp = stat.ModTime()
+				}
+				if metadata.Size == 0 {
+					metadata.Size = stat.Size()
+				}
+			}
+		}
+
+		return metadata, nil
+	}
 }
 
 // Delete removes a backup file and its associated files
 func (l *LocalStorage) Delete(ctx context.Context, backupFile string) error {
+	_, err := l.deleteBackupInternal(ctx, backupFile)
+	return err
+}
+
+func (l *LocalStorage) deleteBackupInternal(ctx context.Context, backupFile string) (bool, error) {
 	if err := ctx.Err(); err != nil {
-		return err
+		return false, err
 	}
 
 	l.logger.Debug("Local storage: deleting backup %s", filepath.Base(backupFile))
@@ -274,26 +368,26 @@ func (l *LocalStorage) Delete(ctx context.Context, backupFile string) error {
 	}
 
 	// Best-effort: delete associated local log file for this backup
-	l.deleteAssociatedLog(backupFile)
+	logDeleted := l.deleteAssociatedLog(backupFile)
 
-	l.logger.Info("Local storage: deleted backup and associated files: %s", filepath.Base(backupFile))
-	return nil
+	l.logger.Debug("Local storage: deleted backup and associated files: %s", filepath.Base(backupFile))
+	return logDeleted, nil
 }
 
 // deleteAssociatedLog attempts to remove the local log file corresponding to a backup.
 // It is best-effort and never returns an error to the caller.
-func (l *LocalStorage) deleteAssociatedLog(backupFile string) {
+func (l *LocalStorage) deleteAssociatedLog(backupFile string) bool {
 	if l == nil || l.config == nil {
-		return
+		return false
 	}
 	logPath := strings.TrimSpace(l.config.LogPath)
 	if logPath == "" {
-		return
+		return false
 	}
 
 	host, ts, ok := extractLogKeyFromBackup(backupFile)
 	if !ok {
-		return
+		return false
 	}
 
 	logName := fmt.Sprintf("backup-%s-%s.log", host, ts)
@@ -303,10 +397,28 @@ func (l *LocalStorage) deleteAssociatedLog(backupFile string) {
 		if !os.IsNotExist(err) {
 			l.logger.Debug("Local logs: failed to delete %s: %v", logName, err)
 		}
-		return
+		return false
 	}
 
-	l.logger.Info("Local logs: deleted log file %s", logName)
+	l.logger.Debug("Local logs: deleted log file %s", logName)
+	return true
+}
+
+func (l *LocalStorage) countLogFiles() int {
+	if l == nil || l.config == nil {
+		return -1
+	}
+	logPath := strings.TrimSpace(l.config.LogPath)
+	if logPath == "" {
+		return 0
+	}
+	pattern := filepath.Join(logPath, "backup-*.log")
+	matches, err := filepath.Glob(pattern)
+	if err != nil {
+		l.logger.Debug("Local logs: failed to count log files: %v", err)
+		return -1
+	}
+	return len(matches)
 }
 
 // ApplyRetention removes old backups according to retention policy
@@ -343,8 +455,11 @@ func (l *LocalStorage) ApplyRetention(ctx context.Context, config RetentionConfi
 
 // applyGFSRetention applies GFS (Grandfather-Father-Son) retention policy
 func (l *LocalStorage) applyGFSRetention(ctx context.Context, backups []*types.BackupMetadata, config RetentionConfig) (int, error) {
-	l.logger.Info("Applying GFS retention policy (daily=%d, weekly=%d, monthly=%d, yearly=%d)",
+	l.logger.Debug("Applying GFS retention policy (daily=%d, weekly=%d, monthly=%d, yearly=%d)",
 		config.Daily, config.Weekly, config.Monthly, config.Yearly)
+
+	initialLogs := l.countLogFiles()
+	logsDeleted := 0
 
 	// Classify backups according to GFS scheme
 	classification := ClassifyBackupsGFS(backups, config)
@@ -352,7 +467,7 @@ func (l *LocalStorage) applyGFSRetention(ctx context.Context, backups []*types.B
 	// Get statistics
 	stats := GetRetentionStats(classification)
 	kept := len(backups) - stats[CategoryDelete]
-	l.logger.Info("GFS classification → daily: %d/%d, weekly: %d/%d, monthly: %d/%d, yearly: %d/%d, kept: %d, to_delete: %d",
+	l.logger.Debug("GFS classification → daily: %d/%d, weekly: %d/%d, monthly: %d/%d, yearly: %d/%d, kept: %d, to_delete: %d",
 		stats[CategoryDaily], config.Daily,
 		stats[CategoryWeekly], config.Weekly,
 		stats[CategoryMonthly], config.Monthly,
@@ -375,16 +490,43 @@ func (l *LocalStorage) applyGFSRetention(ctx context.Context, backups []*types.B
 			filepath.Base(backup.BackupFile),
 			backup.Timestamp.Format("2006-01-02 15:04:05"))
 
-		if err := l.Delete(ctx, backup.BackupFile); err != nil {
+		logDeleted, err := l.deleteBackupInternal(ctx, backup.BackupFile)
+		if err != nil {
 			l.logger.Warning("Failed to delete %s: %v", backup.BackupFile, err)
 			continue
 		}
 
 		deleted++
+		if logDeleted {
+			logsDeleted++
+		}
 	}
 
 	remaining := len(backups) - deleted
-	l.logger.Info("Local storage retention applied: deleted %d backups, %d remaining", deleted, remaining)
+	if remaining < 0 {
+		remaining = 0
+	}
+
+	if logsRemaining, ok := computeRemaining(initialLogs, logsDeleted); ok {
+		l.logger.Debug("Local storage retention applied: deleted %d backups (logs deleted: %d), %d backups remaining (%d logs remaining)",
+			deleted, logsDeleted, remaining, logsRemaining)
+		l.lastRet = RetentionSummary{
+			BackupsDeleted:   deleted,
+			BackupsRemaining: remaining,
+			LogsDeleted:      logsDeleted,
+			LogsRemaining:    logsRemaining,
+			HasLogInfo:       true,
+		}
+	} else {
+		l.logger.Debug("Local storage retention applied: deleted %d backups (logs deleted: %d), %d backups remaining",
+			deleted, logsDeleted, remaining)
+		l.lastRet = RetentionSummary{
+			BackupsDeleted:   deleted,
+			BackupsRemaining: remaining,
+			LogsDeleted:      logsDeleted,
+			HasLogInfo:       false,
+		}
+	}
 
 	return deleted, nil
 }
@@ -410,6 +552,8 @@ func (l *LocalStorage) applySimpleRetention(ctx context.Context, backups []*type
 		totalBackups, maxBackups, toDelete)
 
 	// Delete oldest backups (already sorted newest first)
+	initialLogs := l.countLogFiles()
+	logsDeleted := 0
 	deleted := 0
 	for i := totalBackups - 1; i >= maxBackups; i-- {
 		if err := ctx.Err(); err != nil {
@@ -421,18 +565,50 @@ func (l *LocalStorage) applySimpleRetention(ctx context.Context, backups []*type
 			filepath.Base(backup.BackupFile),
 			backup.Timestamp.Format("2006-01-02 15:04:05"))
 
-		if err := l.Delete(ctx, backup.BackupFile); err != nil {
+		logDeleted, err := l.deleteBackupInternal(ctx, backup.BackupFile)
+		if err != nil {
 			l.logger.Warning("Failed to delete %s: %v", backup.BackupFile, err)
 			continue
 		}
 
 		deleted++
+		if logDeleted {
+			logsDeleted++
+		}
 	}
 
 	remaining := totalBackups - deleted
-	l.logger.Debug("Local storage retention applied: deleted %d backups, %d remaining", deleted, remaining)
+	if remaining < 0 {
+		remaining = 0
+	}
+
+	if logsRemaining, ok := computeRemaining(initialLogs, logsDeleted); ok {
+		l.logger.Debug("Local storage retention applied: deleted %d backups (logs deleted: %d), %d backups remaining (%d logs remaining)",
+			deleted, logsDeleted, remaining, logsRemaining)
+		l.lastRet = RetentionSummary{
+			BackupsDeleted:   deleted,
+			BackupsRemaining: remaining,
+			LogsDeleted:      logsDeleted,
+			LogsRemaining:    logsRemaining,
+			HasLogInfo:       true,
+		}
+	} else {
+		l.logger.Debug("Local storage retention applied: deleted %d backups (logs deleted: %d), %d backups remaining",
+			deleted, logsDeleted, remaining)
+		l.lastRet = RetentionSummary{
+			BackupsDeleted:   deleted,
+			BackupsRemaining: remaining,
+			LogsDeleted:      logsDeleted,
+			HasLogInfo:       false,
+		}
+	}
 
 	return deleted, nil
+}
+
+// LastRetentionSummary returns information about the latest retention run.
+func (l *LocalStorage) LastRetentionSummary() RetentionSummary {
+	return l.lastRet
 }
 
 // VerifyUpload is not applicable for local storage

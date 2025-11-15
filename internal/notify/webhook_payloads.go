@@ -492,9 +492,14 @@ func buildGenericPayload(data *NotificationData, logger *logging.Logger) (map[st
 		},
 	}
 
+	storage, ok := payload["storage"].(map[string]interface{})
+	if !ok {
+		return nil, fmt.Errorf("internal error: storage payload malformed")
+	}
+
 	// Add secondary storage if enabled
 	if data.SecondaryEnabled {
-		payload["storage"].(map[string]interface{})["secondary"] = map[string]interface{}{
+		storage["secondary"] = map[string]interface{}{
 			"status":         data.SecondaryStatus,
 			"status_summary": data.SecondaryStatusSummary,
 			"emoji":          GetStorageEmoji(data.SecondaryStatus),
@@ -509,7 +514,7 @@ func buildGenericPayload(data *NotificationData, logger *logging.Logger) (map[st
 
 	// Add cloud storage if enabled
 	if data.CloudEnabled {
-		payload["storage"].(map[string]interface{})["cloud"] = map[string]interface{}{
+		storage["cloud"] = map[string]interface{}{
 			"status":         data.CloudStatus,
 			"status_summary": data.CloudStatusSummary,
 			"emoji":          GetStorageEmoji(data.CloudStatus),

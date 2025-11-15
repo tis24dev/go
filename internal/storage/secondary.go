@@ -26,6 +26,7 @@ type SecondaryStorage struct {
 	basePath   string
 	fsDetector *FilesystemDetector
 	fsInfo     *FilesystemInfo
+	lastRet    RetentionSummary
 }
 
 // NewSecondaryStorage creates a new secondary storage instance
@@ -156,6 +157,7 @@ func (s *SecondaryStorage) Store(ctx context.Context, backupFile string, metadat
 			backupFile + ".metadata",
 			backupFile + ".metadata.sha256",
 		}
+		failedAssoc := make([]string, 0)
 
 		for _, srcFile := range associatedFiles {
 			if _, err := os.Stat(srcFile); err != nil {
@@ -166,8 +168,14 @@ func (s *SecondaryStorage) Store(ctx context.Context, backupFile string, metadat
 			if err := s.copyFile(ctx, srcFile, destAssocFile); err != nil {
 				s.logger.Warning("WARNING: Secondary Storage: Failed to copy associated file %s: %v",
 					filepath.Base(srcFile), err)
+				failedAssoc = append(failedAssoc, filepath.Base(srcFile))
 				// Continue with other files
 			}
+		}
+
+		if len(failedAssoc) > 0 {
+			s.logger.Warning("WARNING: Secondary Storage: %d associated file(s) failed to copy: %v",
+				len(failedAssoc), failedAssoc)
 		}
 	} else {
 		// Copy bundle file
@@ -374,8 +382,13 @@ func (s *SecondaryStorage) List(ctx context.Context) ([]*types.BackupMetadata, e
 
 // Delete removes a backup file and its associated files
 func (s *SecondaryStorage) Delete(ctx context.Context, backupFile string) error {
+	_, err := s.deleteBackupInternal(ctx, backupFile)
+	return err
+}
+
+func (s *SecondaryStorage) deleteBackupInternal(ctx context.Context, backupFile string) (bool, error) {
 	if err := ctx.Err(); err != nil {
-		return err
+		return false, err
 	}
 
 	s.logger.Debug("Deleting secondary backup: %s", backupFile)
@@ -414,27 +427,27 @@ func (s *SecondaryStorage) Delete(ctx context.Context, backupFile string) error 
 	}
 
 	// Best-effort: delete associated secondary log file for this backup
-	s.deleteAssociatedLog(backupFile)
+	logDeleted := s.deleteAssociatedLog(backupFile)
 
-	s.logger.Info("Deleted secondary backup: %s", filepath.Base(backupFile))
-	return nil
+	s.logger.Debug("Deleted secondary backup: %s", filepath.Base(backupFile))
+	return logDeleted, nil
 }
 
 // deleteAssociatedLog attempts to remove the secondary log file corresponding to a backup.
 // It is best-effort and never returns an error to the caller.
-func (s *SecondaryStorage) deleteAssociatedLog(backupFile string) {
+func (s *SecondaryStorage) deleteAssociatedLog(backupFile string) bool {
 	if s == nil || s.config == nil {
-		return
+		return false
 	}
 
 	logPath := strings.TrimSpace(s.config.SecondaryLogPath)
 	if logPath == "" {
-		return
+		return false
 	}
 
 	host, ts, ok := extractLogKeyFromBackup(backupFile)
 	if !ok {
-		return
+		return false
 	}
 
 	logName := fmt.Sprintf("backup-%s-%s.log", host, ts)
@@ -444,10 +457,28 @@ func (s *SecondaryStorage) deleteAssociatedLog(backupFile string) {
 		if !os.IsNotExist(err) {
 			s.logger.Debug("Secondary logs: failed to delete %s: %v", logName, err)
 		}
-		return
+		return false
 	}
 
-	s.logger.Info("Secondary logs: deleted log file %s", logName)
+	s.logger.Debug("Secondary logs: deleted log file %s", logName)
+	return true
+}
+
+func (s *SecondaryStorage) countLogFiles() int {
+	if s == nil || s.config == nil {
+		return -1
+	}
+	logPath := strings.TrimSpace(s.config.SecondaryLogPath)
+	if logPath == "" {
+		return 0
+	}
+	pattern := filepath.Join(logPath, "backup-*.log")
+	matches, err := filepath.Glob(pattern)
+	if err != nil {
+		s.logger.Debug("Secondary logs: failed to count log files: %v", err)
+		return -1
+	}
+	return len(matches)
 }
 
 // ApplyRetention removes old backups according to retention policy
@@ -486,15 +517,18 @@ func (s *SecondaryStorage) ApplyRetention(ctx context.Context, config RetentionC
 
 // applyGFSRetention applies GFS (Grandfather-Father-Son) retention policy
 func (s *SecondaryStorage) applyGFSRetention(ctx context.Context, backups []*types.BackupMetadata, config RetentionConfig) (int, error) {
-	s.logger.Info("Applying GFS retention policy (daily=%d, weekly=%d, monthly=%d, yearly=%d)",
+	s.logger.Debug("Applying GFS retention policy (daily=%d, weekly=%d, monthly=%d, yearly=%d)",
 		config.Daily, config.Weekly, config.Monthly, config.Yearly)
+
+	initialLogs := s.countLogFiles()
+	logsDeleted := 0
 
 	// Classify backups according to GFS scheme
 	classification := ClassifyBackupsGFS(backups, config)
 
 	// Get statistics
 	stats := GetRetentionStats(classification)
-	s.logger.Info("GFS classification → daily: %d/%d, weekly: %d/%d, monthly: %d/%d, yearly: %d/%d, to_delete: %d",
+	s.logger.Debug("GFS classification → daily: %d/%d, weekly: %d/%d, monthly: %d/%d, yearly: %d/%d, to_delete: %d",
 		stats[CategoryDaily], config.Daily,
 		stats[CategoryWeekly], config.Weekly,
 		stats[CategoryMonthly], config.Monthly,
@@ -516,16 +550,43 @@ func (s *SecondaryStorage) applyGFSRetention(ctx context.Context, backups []*typ
 			filepath.Base(backup.BackupFile),
 			backup.Timestamp.Format("2006-01-02 15:04:05"))
 
-		if err := s.Delete(ctx, backup.BackupFile); err != nil {
+		logDeleted, err := s.deleteBackupInternal(ctx, backup.BackupFile)
+		if err != nil {
 			s.logger.Warning("WARNING: Secondary storage - failed to delete %s: %v", backup.BackupFile, err)
 			continue
 		}
 
 		deleted++
+		if logDeleted {
+			logsDeleted++
+		}
 	}
 
 	remaining := len(backups) - deleted
-	s.logger.Info("Secondary storage retention applied: deleted %d backups, %d remaining", deleted, remaining)
+	if remaining < 0 {
+		remaining = 0
+	}
+
+	if logsRemaining, ok := computeRemaining(initialLogs, logsDeleted); ok {
+		s.logger.Debug("Secondary storage retention applied: deleted %d backups (logs deleted: %d), %d backups remaining (%d logs remaining)",
+			deleted, logsDeleted, remaining, logsRemaining)
+		s.lastRet = RetentionSummary{
+			BackupsDeleted:   deleted,
+			BackupsRemaining: remaining,
+			LogsDeleted:      logsDeleted,
+			LogsRemaining:    logsRemaining,
+			HasLogInfo:       true,
+		}
+	} else {
+		s.logger.Debug("Secondary storage retention applied: deleted %d backups (logs deleted: %d), %d backups remaining",
+			deleted, logsDeleted, remaining)
+		s.lastRet = RetentionSummary{
+			BackupsDeleted:   deleted,
+			BackupsRemaining: remaining,
+			LogsDeleted:      logsDeleted,
+			HasLogInfo:       false,
+		}
+	}
 
 	return deleted, nil
 }
@@ -551,6 +612,8 @@ func (s *SecondaryStorage) applySimpleRetention(ctx context.Context, backups []*
 		totalBackups, maxBackups, toDelete)
 
 	// Delete oldest backups (already sorted newest first)
+	initialLogs := s.countLogFiles()
+	logsDeleted := 0
 	deleted := 0
 	for i := totalBackups - 1; i >= maxBackups; i-- {
 		if err := ctx.Err(); err != nil {
@@ -562,16 +625,43 @@ func (s *SecondaryStorage) applySimpleRetention(ctx context.Context, backups []*
 			filepath.Base(backup.BackupFile),
 			backup.Timestamp.Format("2006-01-02 15:04:05"))
 
-		if err := s.Delete(ctx, backup.BackupFile); err != nil {
+		logDeleted, err := s.deleteBackupInternal(ctx, backup.BackupFile)
+		if err != nil {
 			s.logger.Warning("WARNING: Secondary storage - failed to delete %s: %v", backup.BackupFile, err)
 			continue
 		}
 
 		deleted++
+		if logDeleted {
+			logsDeleted++
+		}
 	}
 
 	remaining := totalBackups - deleted
-	s.logger.Debug("Secondary storage retention applied: deleted %d backups, %d remaining", deleted, remaining)
+	if remaining < 0 {
+		remaining = 0
+	}
+
+	if logsRemaining, ok := computeRemaining(initialLogs, logsDeleted); ok {
+		s.logger.Debug("Secondary storage retention applied: deleted %d backups (logs deleted: %d), %d backups remaining (%d logs remaining)",
+			deleted, logsDeleted, remaining, logsRemaining)
+		s.lastRet = RetentionSummary{
+			BackupsDeleted:   deleted,
+			BackupsRemaining: remaining,
+			LogsDeleted:      logsDeleted,
+			LogsRemaining:    logsRemaining,
+			HasLogInfo:       true,
+		}
+	} else {
+		s.logger.Debug("Secondary storage retention applied: deleted %d backups (logs deleted: %d), %d backups remaining",
+			deleted, logsDeleted, remaining)
+		s.lastRet = RetentionSummary{
+			BackupsDeleted:   deleted,
+			BackupsRemaining: remaining,
+			LogsDeleted:      logsDeleted,
+			HasLogInfo:       false,
+		}
+	}
 
 	return deleted, nil
 }
@@ -579,6 +669,11 @@ func (s *SecondaryStorage) applySimpleRetention(ctx context.Context, backups []*
 // VerifyUpload is not applicable for secondary storage
 func (s *SecondaryStorage) VerifyUpload(ctx context.Context, localFile, remoteFile string) (bool, error) {
 	return true, nil
+}
+
+// LastRetentionSummary returns the latest retention summary.
+func (s *SecondaryStorage) LastRetentionSummary() RetentionSummary {
+	return s.lastRet
 }
 
 // GetStats returns storage statistics

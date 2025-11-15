@@ -4,7 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"crypto/md5"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -311,18 +311,35 @@ func (c *Checker) verifyBinaryIntegrity() {
 		return
 	}
 
-	info, err := os.Lstat(c.execPath)
+	f, err := os.Open(c.execPath)
+	if err != nil {
+		c.addError("Cannot open executable %s: %v", c.execPath, err)
+		return
+	}
+	defer f.Close()
+
+	info, err := f.Stat()
 	if err != nil {
 		c.addError("Cannot stat executable %s: %v", c.execPath, err)
 		return
 	}
 
-	info = c.ensureOwnershipAndPerm(c.execPath, info, 0o700, fmt.Sprintf("Executable %s", c.execPath))
+	if info.Mode()&os.ModeSymlink != 0 {
+		c.addError("Executable %s is a symlink", c.execPath)
+		return
+	}
+
+	c.ensureOwnershipAndPerm(c.execPath, info, 0o700, fmt.Sprintf("Executable %s", c.execPath))
 
 	hashFile := c.execPath + ".md5"
-	currentHash, err := checksumFile(c.execPath)
+	currentHash, err := checksumReader(f)
 	if err != nil {
 		c.addWarning("Unable to calculate hash for %s: %v", c.execPath, err)
+		return
+	}
+
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		c.addWarning("Unable to rewind file for %s: %v", c.execPath, err)
 		return
 	}
 
@@ -489,11 +506,16 @@ func (c *Checker) detectPrivateAgeKeys() {
 	}
 
 	privateKeyMarkers := []string{"AGE-SECRET-KEY-", "BEGIN AGE PRIVATE KEY", "OPENSSH PRIVATE KEY"}
-	_ = filepath.WalkDir(identityDir, func(path string, d fs.DirEntry, err error) error {
+	if err := filepath.WalkDir(identityDir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
+			c.logger.Debug("Security: cannot access %s: %v", path, err)
 			return nil
 		}
 		if d.IsDir() {
+			return nil
+		}
+		ext := strings.ToLower(filepath.Ext(path))
+		if ext == ".md" || ext == ".txt" || ext == ".example" {
 			return nil
 		}
 		hasMarker, scanErr := fileContainsMarker(path, privateKeyMarkers, 64*1024)
@@ -502,10 +524,12 @@ func (c *Checker) detectPrivateAgeKeys() {
 			return nil
 		}
 		if hasMarker {
-			c.addError("Private AGE/SSH key detected on server: %s", path)
+			c.addWarning("Possible private AGE/SSH key detected: %s (review manually)", path)
 		}
 		return nil
-	})
+	}); err != nil {
+		c.logger.Debug("Security: private key detection walk error: %v", err)
+	}
 }
 
 func fileContainsMarker(path string, markers []string, limit int) (bool, error) {
@@ -515,24 +539,50 @@ func fileContainsMarker(path string, markers []string, limit int) (bool, error) 
 	}
 	defer f.Close()
 
+	const bufSize = 4096
+	maxMarkerLen := 0
+	upperMarkers := make([]string, len(markers))
+	for i, marker := range markers {
+		upper := strings.ToUpper(marker)
+		upperMarkers[i] = upper
+		if len(upper) > maxMarkerLen {
+			maxMarkerLen = len(upper)
+		}
+	}
+	if maxMarkerLen == 0 {
+		return false, nil
+	}
+
 	reader := bufio.NewReader(f)
-	buffer := make([]byte, 4096)
-	read := 0
+	buffer := make([]byte, bufSize)
+	overlap := make([]byte, 0, maxMarkerLen)
+	totalRead := 0
 
 	for {
-		if limit > 0 && read >= limit {
+		if limit > 0 && totalRead >= limit {
 			return false, nil
 		}
+
 		n, err := reader.Read(buffer)
 		if n > 0 {
-			chunk := strings.ToUpper(string(buffer[:n]))
-			for _, marker := range markers {
-				if strings.Contains(chunk, strings.ToUpper(marker)) {
+			combined := append(overlap, buffer[:n]...)
+			chunk := strings.ToUpper(string(combined))
+
+			for _, marker := range upperMarkers {
+				if strings.Contains(chunk, marker) {
 					return true, nil
 				}
 			}
-			read += n
+
+			if len(combined) >= maxMarkerLen {
+				overlap = append([]byte{}, combined[len(combined)-maxMarkerLen:]...)
+			} else {
+				overlap = append([]byte{}, combined...)
+			}
+
+			totalRead += n
 		}
+
 		if err != nil {
 			if errors.Is(err, io.EOF) {
 				return false, nil
@@ -696,9 +746,12 @@ func checksumFile(path string) (string, error) {
 		return "", err
 	}
 	defer f.Close()
+	return checksumReader(f)
+}
 
-	hasher := md5.New()
-	if _, err := io.Copy(hasher, f); err != nil {
+func checksumReader(r io.Reader) (string, error) {
+	hasher := sha256.New()
+	if _, err := io.Copy(hasher, r); err != nil {
 		return "", err
 	}
 	return strings.ToLower(hex.EncodeToString(hasher.Sum(nil))), nil
@@ -868,15 +921,20 @@ func (c *Checker) ensureOwnershipAndPerm(path string, info os.FileInfo, expected
 		}
 	}
 
+	isSymlink := info.Mode()&os.ModeSymlink != 0
+
 	if expectedPerm != 0 {
 		if perm := info.Mode().Perm(); perm != expectedPerm {
 			c.bannerWarning(fmt.Sprintf("incorrect permissions on %s (current %o, expected %o)", path, perm, expectedPerm))
 			if c.cfg.AutoFixPermissions {
-				if err := os.Chmod(path, expectedPerm); err != nil {
+				if isSymlink {
+					c.addError("Security: refusing to chmod symlink %s", path)
+				} else if err := syscall.Chmod(path, uint32(expectedPerm)); err != nil {
 					c.addWarning("Failed to adjust permissions on %s: %v", path, err)
 				} else {
 					c.logger.Info("Adjusted permissions on %s to %o", path, expectedPerm)
 					info, _ = os.Lstat(path)
+					isSymlink = info.Mode()&os.ModeSymlink != 0
 				}
 			} else {
 				c.addWarning("%s should have permissions %o (current %o)", description, expectedPerm, perm)
@@ -887,7 +945,9 @@ func (c *Checker) ensureOwnershipAndPerm(path string, info os.FileInfo, expected
 	if info != nil && !isOwnedByRoot(info) {
 		c.bannerWarning(fmt.Sprintf("incorrect ownership on %s (required root:root)", path))
 		if c.cfg.AutoFixPermissions {
-			if err := os.Chown(path, 0, 0); err != nil {
+			if isSymlink {
+				c.addError("Security: refusing to chown symlink %s", path)
+			} else if err := syscall.Lchown(path, 0, 0); err != nil {
 				c.addWarning("Failed to set ownership root:root on %s: %v", path, err)
 			} else {
 				c.logger.Info("Adjusted ownership on %s to root:root", path)

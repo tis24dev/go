@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -227,7 +228,19 @@ func (w *WebhookNotifier) sendToEndpoint(ctx context.Context, endpoint config.We
 		if method == "" {
 			method = "POST"
 		}
-		w.logger.Debug("Creating HTTP %s request to %s (attempt %d/%d)", method, maskURL(endpoint.URL), attempt+1, maxRetries+1)
+
+		parsedURL, parseErr := url.Parse(endpoint.URL)
+		if parseErr != nil {
+			lastErr = fmt.Errorf("invalid webhook URL: %w", parseErr)
+			w.logger.Warning("Invalid URL for endpoint %s: %v", endpoint.Name, parseErr)
+			break
+		}
+		if parsedURL.Scheme != "http" && parsedURL.Scheme != "https" {
+			lastErr = fmt.Errorf("invalid URL scheme %q for endpoint %s", parsedURL.Scheme, endpoint.Name)
+			w.logger.Warning("Invalid URL scheme for endpoint %s: %s", endpoint.Name, parsedURL.Scheme)
+			break
+		}
+		w.logger.Debug("Creating HTTP %s request to %s (attempt %d/%d)", method, maskURL(parsedURL.String()), attempt+1, maxRetries+1)
 
 		var bodyReader io.Reader
 		switch method {
@@ -238,7 +251,7 @@ func (w *WebhookNotifier) sendToEndpoint(ctx context.Context, endpoint config.We
 		}
 
 		// Create request
-		req, err := http.NewRequestWithContext(ctx, method, endpoint.URL, bodyReader)
+		req, err := http.NewRequestWithContext(ctx, method, parsedURL.String(), bodyReader)
 		if err != nil {
 			lastErr = fmt.Errorf("failed to create request: %w", err)
 			w.logger.Warning("Request creation failed (attempt %d/%d): %v", attempt+1, maxRetries+1, err)
@@ -254,8 +267,23 @@ func (w *WebhookNotifier) sendToEndpoint(ctx context.Context, endpoint config.We
 
 		// Set custom headers
 		if len(endpoint.Headers) > 0 {
+			blockedHeaders := map[string]struct{}{
+				"host":              {},
+				"content-length":    {},
+				"content-type":      {},
+				"transfer-encoding": {},
+			}
 			w.logger.Debug("Applying %d custom header(s)", len(endpoint.Headers))
 			for k, v := range endpoint.Headers {
+				headerName := strings.ToLower(strings.TrimSpace(k))
+				if headerName == "" {
+					w.logger.Warning("Skipped empty custom header name")
+					continue
+				}
+				if _, blocked := blockedHeaders[headerName]; blocked {
+					w.logger.Warning("Skipped protected custom header %s", k)
+					continue
+				}
 				req.Header.Set(k, v)
 				w.logger.Debug("  Custom header: %s = %s", k, maskHeaderValue(k, v))
 			}
@@ -434,16 +462,35 @@ func (w *WebhookNotifier) applyAuthentication(req *http.Request, auth config.Web
 }
 
 // maskURL masks sensitive parts of URL for logging
-func maskURL(url string) string {
-	// Mask everything after the host
-	if idx := strings.Index(url, "//"); idx >= 0 {
-		afterProto := url[idx+2:]
-		if idx2 := strings.Index(afterProto, "/"); idx2 >= 0 {
-			host := afterProto[:idx2]
-			return url[:idx+2] + host + "/***MASKED***"
-		}
+func maskURL(rawURL string) string {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return "***INVALID_URL***"
 	}
-	return url
+
+	if parsed.Scheme == "" || parsed.Host == "" {
+		return "***INVALID_URL***"
+	}
+
+	var b strings.Builder
+	b.Grow(len(parsed.Scheme) + len(parsed.Host) + 16)
+	b.WriteString(parsed.Scheme)
+	b.WriteString("://")
+	b.WriteString(parsed.Host)
+
+	if parsed.Path != "" {
+		b.WriteString("/***MASKED***")
+	}
+
+	if parsed.RawQuery != "" {
+		b.WriteString("?***MASKED***")
+	}
+
+	if parsed.Fragment != "" {
+		b.WriteString("#***MASKED***")
+	}
+
+	return b.String()
 }
 
 // maskHeaderValue masks sensitive header values for logging
