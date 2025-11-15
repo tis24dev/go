@@ -273,8 +273,40 @@ func (l *LocalStorage) Delete(ctx context.Context, backupFile string) error {
 		}
 	}
 
+	// Best-effort: delete associated local log file for this backup
+	l.deleteAssociatedLog(backupFile)
+
 	l.logger.Info("Local storage: deleted backup and associated files: %s", filepath.Base(backupFile))
 	return nil
+}
+
+// deleteAssociatedLog attempts to remove the local log file corresponding to a backup.
+// It is best-effort and never returns an error to the caller.
+func (l *LocalStorage) deleteAssociatedLog(backupFile string) {
+	if l == nil || l.config == nil {
+		return
+	}
+	logPath := strings.TrimSpace(l.config.LogPath)
+	if logPath == "" {
+		return
+	}
+
+	host, ts, ok := extractLogKeyFromBackup(backupFile)
+	if !ok {
+		return
+	}
+
+	logName := fmt.Sprintf("backup-%s-%s.log", host, ts)
+	fullPath := filepath.Join(logPath, logName)
+
+	if err := os.Remove(fullPath); err != nil {
+		if !os.IsNotExist(err) {
+			l.logger.Debug("Local logs: failed to delete %s: %v", logName, err)
+		}
+		return
+	}
+
+	l.logger.Info("Local logs: deleted log file %s", logName)
 }
 
 // ApplyRetention removes old backups according to retention policy

@@ -75,9 +75,9 @@ The Go version supports two retention strategies:
 ```bash
 # Example GFS configuration
 RETENTION_DAILY=7        # Keep last 7 backups (daily tier)
-RETENTION_WEEKLY=4       # Keep 4 weekly backups
-RETENTION_MONTHLY=12     # Keep 12 monthly backups
-RETENTION_YEARLY=3       # Keep 3 yearly backups
+RETENTION_WEEKLY=4       # Keep 4 weekly backups from past weeks
+RETENTION_MONTHLY=12     # Keep 12 monthly backups from past months
+RETENTION_YEARLY=3       # Keep 3 yearly backups from past years
 ```
 
 **Benefits of GFS:**

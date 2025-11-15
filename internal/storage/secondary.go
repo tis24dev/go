@@ -133,13 +133,13 @@ func (s *SecondaryStorage) Store(ctx context.Context, backupFile string, metadat
 	// Determine destination filename
 	destFile := filepath.Join(s.basePath, filepath.Base(backupFile))
 
-    s.logger.Debug("Secondary Storage: Start copy...")
+	s.logger.Debug("Secondary Storage: Start copy...")
 	s.logger.Debug("Copying backup to secondary storage: %s -> %s", filepath.Base(backupFile), s.basePath)
 
-    if err := s.copyFile(ctx, backupFile, destFile); err != nil {
-        s.logger.Warning("WARNING: Secondary Storage: File copy failed for %s: %v", filepath.Base(backupFile), err)
-        s.logger.Warning("WARNING: Secondary Storage: Backup not saved to %s", s.basePath)
-        return &StorageError{
+	if err := s.copyFile(ctx, backupFile, destFile); err != nil {
+		s.logger.Warning("WARNING: Secondary Storage: File copy failed for %s: %v", filepath.Base(backupFile), err)
+		s.logger.Warning("WARNING: Secondary Storage: Backup not saved to %s", s.basePath)
+		return &StorageError{
 			Location:    LocationSecondary,
 			Operation:   "store",
 			Path:        backupFile,
@@ -163,22 +163,22 @@ func (s *SecondaryStorage) Store(ctx context.Context, backupFile string, metadat
 			}
 
 			destAssocFile := filepath.Join(s.basePath, filepath.Base(srcFile))
-            if err := s.copyFile(ctx, srcFile, destAssocFile); err != nil {
-                s.logger.Warning("WARNING: Secondary Storage: Failed to copy associated file %s: %v",
-                    filepath.Base(srcFile), err)
-                // Continue with other files
-            }
+			if err := s.copyFile(ctx, srcFile, destAssocFile); err != nil {
+				s.logger.Warning("WARNING: Secondary Storage: Failed to copy associated file %s: %v",
+					filepath.Base(srcFile), err)
+				// Continue with other files
+			}
 		}
 	} else {
 		// Copy bundle file
 		bundleFile := backupFile + ".bundle.tar"
 		if _, err := os.Stat(bundleFile); err == nil {
 			destBundle := filepath.Join(s.basePath, filepath.Base(bundleFile))
-            if err := s.copyFile(ctx, bundleFile, destBundle); err != nil {
-                s.logger.Warning("WARNING: Secondary Storage: Failed to copy bundle %s: %v",
-                    filepath.Base(bundleFile), err)
-            }
-        }
+			if err := s.copyFile(ctx, bundleFile, destBundle); err != nil {
+				s.logger.Warning("WARNING: Secondary Storage: Failed to copy bundle %s: %v",
+					filepath.Base(bundleFile), err)
+			}
+		}
 	}
 
 	// Set permissions on destination (best effort)
@@ -190,7 +190,7 @@ func (s *SecondaryStorage) Store(ctx context.Context, backupFile string, metadat
 		}
 	}
 
-    s.logger.Debug("✓ Secondary Storage: File copied")
+	s.logger.Debug("✓ Secondary Storage: File copied")
 
 	if count := s.countBackups(ctx); count >= 0 {
 		s.logger.Debug("Secondary storage: current backups detected after copy: %d", count)
@@ -239,8 +239,8 @@ func (s *SecondaryStorage) copyFile(ctx context.Context, src, dest string) error
 		}
 	}()
 
-    start := time.Now()
-    sourceFile, err := os.Open(src)
+	start := time.Now()
+	sourceFile, err := os.Open(src)
 	if err != nil {
 		return fmt.Errorf("failed to open source file %s: %w", src, err)
 	}
@@ -290,19 +290,19 @@ func (s *SecondaryStorage) copyFile(ctx context.Context, src, dest string) error
 	}
 	tempName = ""
 
-    elapsed := time.Since(start)
-    var rateStr string
-    if elapsed > 0 {
-        rate := float64(written) / elapsed.Seconds()
-        if rate < 0 {
-            rate = 0
-        }
-        rateStr = fmt.Sprintf("%s/s", utils.FormatBytes(int64(rate)))
-    } else {
-        rateStr = "n/a"
-    }
-    s.logger.Debug("Copied %s (%s) to %s in %s (avg %s)", filepath.Base(src), utils.FormatBytes(written), dest, elapsed.Truncate(time.Millisecond), rateStr)
-    return nil
+	elapsed := time.Since(start)
+	var rateStr string
+	if elapsed > 0 {
+		rate := float64(written) / elapsed.Seconds()
+		if rate < 0 {
+			rate = 0
+		}
+		rateStr = fmt.Sprintf("%s/s", utils.FormatBytes(int64(rate)))
+	} else {
+		rateStr = "n/a"
+	}
+	s.logger.Debug("Copied %s (%s) to %s in %s (avg %s)", filepath.Base(src), utils.FormatBytes(written), dest, elapsed.Truncate(time.Millisecond), rateStr)
+	return nil
 }
 
 // List returns all backups in secondary storage
@@ -413,8 +413,41 @@ func (s *SecondaryStorage) Delete(ctx context.Context, backupFile string) error 
 		}
 	}
 
+	// Best-effort: delete associated secondary log file for this backup
+	s.deleteAssociatedLog(backupFile)
+
 	s.logger.Info("Deleted secondary backup: %s", filepath.Base(backupFile))
 	return nil
+}
+
+// deleteAssociatedLog attempts to remove the secondary log file corresponding to a backup.
+// It is best-effort and never returns an error to the caller.
+func (s *SecondaryStorage) deleteAssociatedLog(backupFile string) {
+	if s == nil || s.config == nil {
+		return
+	}
+
+	logPath := strings.TrimSpace(s.config.SecondaryLogPath)
+	if logPath == "" {
+		return
+	}
+
+	host, ts, ok := extractLogKeyFromBackup(backupFile)
+	if !ok {
+		return
+	}
+
+	logName := fmt.Sprintf("backup-%s-%s.log", host, ts)
+	fullPath := filepath.Join(logPath, logName)
+
+	if err := os.Remove(fullPath); err != nil {
+		if !os.IsNotExist(err) {
+			s.logger.Debug("Secondary logs: failed to delete %s: %v", logName, err)
+		}
+		return
+	}
+
+	s.logger.Info("Secondary logs: deleted log file %s", logName)
 }
 
 // ApplyRetention removes old backups according to retention policy

@@ -349,9 +349,9 @@ MAX_CLOUD_BACKUPS=15
 # Distributes backups across time periods for better historical coverage (hierarchical GFS)
 
 RETENTION_DAILY=7        # Keep last 7 backups (daily tier)
-RETENTION_WEEKLY=4       # Keep 4 weekly backups (1 per ISO week)
-RETENTION_MONTHLY=12     # Keep 12 monthly backups (1 per month)
-RETENTION_YEARLY=3       # Keep 3 yearly backups (1 per year)
+RETENTION_WEEKLY=4       # Keep 4 weekly backups from past weeks (1 per ISO week)
+RETENTION_MONTHLY=12     # Keep 12 monthly backups from past months (1 per month)
+RETENTION_YEARLY=3       # Keep 3 yearly backups from past years (1 per year)
 ```
 
 **GFS Features:**

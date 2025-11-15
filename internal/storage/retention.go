@@ -3,6 +3,7 @@ package storage
 import (
 	"fmt"
 	"sort"
+	"time"
 
 	"github.com/tis24dev/proxmox-backup/internal/config"
 	"github.com/tis24dev/proxmox-backup/internal/types"
@@ -79,6 +80,10 @@ func ClassifyBackupsGFS(backups []*types.BackupMetadata, config RetentionConfig)
 	})
 
 	classification := make(map[*types.BackupMetadata]RetentionCategory)
+	now := time.Now()
+	currentYear, currentWeek := now.ISOWeek()
+	currentYearInt := now.Year()
+	currentMonth := int(now.Month())
 
 	// 1. DAILY: Keep the last N backups (newest first)
 	dailyLimit := config.Daily
@@ -102,7 +107,8 @@ func ClassifyBackupsGFS(backups []*types.BackupMetadata, config RetentionConfig)
 	}
 
 	// 2. WEEKLY: Keep one backup per week (ISO week number)
-	// Only consider backups older than the oldest daily and not already classified
+	// Only consider backups older than the oldest daily and not already classified.
+	// Only weeks strictly before the current ISO week are eligible.
 	if config.Weekly > 0 {
 		weeksSeen := make(map[string]bool)
 		for i := dailyCutIndex; i < len(backups); i++ {
@@ -112,6 +118,11 @@ func ClassifyBackupsGFS(backups []*types.BackupMetadata, config RetentionConfig)
 			}
 
 			year, week := b.Timestamp.ISOWeek()
+			// Skip backups from the current ISO week or later (should not happen for past backups)
+			if year > currentYear || (year == currentYear && week >= currentWeek) {
+				continue
+			}
+
 			weekKey := fmt.Sprintf("%d-W%02d", year, week)
 
 			if !weeksSeen[weekKey] && len(weeksSeen) < config.Weekly {
@@ -122,12 +133,19 @@ func ClassifyBackupsGFS(backups []*types.BackupMetadata, config RetentionConfig)
 	}
 
 	// 3. MONTHLY: Keep one backup per month
-	// Only consider backups older than the oldest daily and not already classified
+	// Only consider backups older than the oldest daily and not already classified.
+	// Only months strictly before the current month are eligible.
 	if config.Monthly > 0 {
 		monthsSeen := make(map[string]bool)
 		for i := dailyCutIndex; i < len(backups); i++ {
 			b := backups[i]
 			if classification[b] != "" {
+				continue
+			}
+
+			byear := b.Timestamp.Year()
+			bmonth := int(b.Timestamp.Month())
+			if byear > currentYearInt || (byear == currentYearInt && bmonth >= currentMonth) {
 				continue
 			}
 
@@ -147,6 +165,12 @@ func ClassifyBackupsGFS(backups []*types.BackupMetadata, config RetentionConfig)
 		for i := dailyCutIndex; i < len(backups); i++ {
 			b := backups[i]
 			if classification[b] != "" {
+				continue
+			}
+
+			byear := b.Timestamp.Year()
+			// Only consider years strictly before the current year
+			if byear >= currentYearInt {
 				continue
 			}
 

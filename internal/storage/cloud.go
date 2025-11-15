@@ -567,7 +567,7 @@ func (c *CloudStorage) uploadWithRetry(ctx context.Context, localFile, remoteFil
 
 		// Wait before retry (exponential backoff)
 		if attempt < c.config.RcloneRetries {
-			waitTime := time.Duration(attempt*2) * time.Second
+			waitTime := time.Duration(1<<uint(attempt)) * time.Second
 			c.logger.Debug("Waiting %v before retry...", waitTime)
 			c.sleep(waitTime)
 		}
@@ -888,10 +888,18 @@ func (c *CloudStorage) List(ctx context.Context) ([]*types.BackupMetadata, error
 
 		// Parse size
 		var size int64
-		fmt.Sscanf(fields[0], "%d", &size)
+		if _, err := fmt.Sscanf(fields[0], "%d", &size); err != nil {
+			c.logger.Debug("Cloud storage: skipping %s (cannot parse size from %q): %v", filename, fields[0], err)
+			continue
+		}
 
 		// Parse timestamp (DATE TIME)
-		timestamp, _ := time.Parse("2006-01-02 15:04:05", fields[1]+" "+fields[2])
+		timeStr := fields[1] + " " + fields[2]
+		timestamp, err := time.Parse("2006-01-02 15:04:05", timeStr)
+		if err != nil {
+			c.logger.Debug("Cloud storage: skipping %s (cannot parse timestamp %q): %v", filename, timeStr, err)
+			continue
+		}
 
 		backups = append(backups, &types.BackupMetadata{
 			BackupFile: filename,
@@ -932,6 +940,8 @@ func (c *CloudStorage) Delete(ctx context.Context, backupFile string) error {
 		}
 	}
 
+	var deleteErr error
+
 	// Delete all files
 	for _, f := range filesToDelete {
 		args := []string{"rclone", "deletefile", f}
@@ -945,12 +955,76 @@ func (c *CloudStorage) Delete(ctx context.Context, backupFile string) error {
 				filepath.Base(f),
 				err,
 				strings.TrimSpace(string(output)))
+			if deleteErr == nil {
+				deleteErr = fmt.Errorf("failed to delete one or more cloud backup files")
+			}
 			// Continue with other files
 		}
 	}
 
+	// Best-effort: delete associated cloud log file for this backup
+	c.deleteAssociatedLog(ctx, backupFile)
+
+	if deleteErr != nil {
+		return deleteErr
+	}
+
 	c.logger.Info("Deleted cloud backup: %s", filename)
 	return nil
+}
+
+// deleteAssociatedLog attempts to remove the cloud log file corresponding to a backup.
+// It is best-effort and never returns an error to the caller.
+func (c *CloudStorage) deleteAssociatedLog(ctx context.Context, backupFile string) {
+	if c == nil || c.config == nil {
+		return
+	}
+
+	base := strings.TrimSpace(c.config.CloudLogPath)
+	if base == "" {
+		return
+	}
+
+	host, ts, ok := extractLogKeyFromBackup(backupFile)
+	if !ok {
+		return
+	}
+
+	logName := fmt.Sprintf("backup-%s-%s.log", host, ts)
+	cloudPath := cloudLogPath(base, logName)
+	if strings.TrimSpace(cloudPath) == "" {
+		return
+	}
+
+	args := []string{"rclone", "delete", cloudPath}
+	c.logger.Debug("Cloud logs: deleting log %s", cloudPath)
+	output, err := c.exec(ctx, args[0], args[1:]...)
+	if err != nil {
+		msg := strings.TrimSpace(string(output))
+		if msg != "" {
+			c.logger.Debug("Cloud logs: delete output for %s: %s", cloudPath, msg)
+		}
+		c.logger.Warning("WARNING: Cloud logs - failed to delete %s: %v", cloudPath, err)
+		return
+	}
+
+	c.logger.Info("Cloud logs: deleted log %s", cloudPath)
+}
+
+// cloudLogPath builds the full cloud log path, mirroring buildCloudLogDestination logic.
+func cloudLogPath(basePath, fileName string) string {
+	base := strings.TrimSpace(basePath)
+	if base == "" {
+		return ""
+	}
+	base = strings.TrimRight(base, "/")
+	if strings.HasSuffix(base, ":") {
+		return base + fileName
+	}
+	if strings.Contains(base, ":") {
+		return base + "/" + fileName
+	}
+	return filepath.Join(base, fileName)
 }
 
 // ApplyRetention removes old backups according to retention policy

@@ -86,7 +86,7 @@ func (s *StorageAdapter) Sync(ctx context.Context, stats *BackupStats) error {
 	}
 
 	// Step 3: Store backup
-	s.logger.Info("%s: Storing backup...", s.backend.Name())
+	s.logger.Step("%s: Storing backup", s.backend.Name())
 	if err := s.backend.Store(ctx, stats.ArchivePath, metadata); err != nil {
 		// Check if error is critical
 		if s.backend.IsCritical() {
