@@ -33,6 +33,20 @@ func (s NotificationStatus) String() string {
 	}
 }
 
+// StatusFromExitCode maps a process exit code to a notification status.
+// This allows logs and notifications (email subject emoji, Telegram, etc.)
+// to stay in sync with the actual exit code emitted by the process.
+func StatusFromExitCode(exitCode int) NotificationStatus {
+	switch exitCode {
+	case types.ExitSuccess.Int():
+		return StatusSuccess
+	case types.ExitGenericError.Int():
+		return StatusWarning
+	default:
+		return StatusFailure
+	}
+}
+
 // NotificationData contains all information to be sent in notifications
 type NotificationData struct {
 	// Overall status
@@ -75,17 +89,17 @@ type NotificationData struct {
 	LocalUsagePercent  float64
 
 	// Local retention info
-	LocalRetentionPolicy      string // "simple" or "gfs"
-	LocalRetentionLimit       int    // MAX_LOCAL_BACKUPS (simple mode)
-	LocalGFSDaily             int    // GFS limits
-	LocalGFSWeekly            int
-	LocalGFSMonthly           int
-	LocalGFSYearly            int
-	LocalGFSCurrentDaily      int // GFS current counts
-	LocalGFSCurrentWeekly     int
-	LocalGFSCurrentMonthly    int
-	LocalGFSCurrentYearly     int
-	LocalBackups              int // Total current backups
+	LocalRetentionPolicy   string // "simple" or "gfs"
+	LocalRetentionLimit    int    // MAX_LOCAL_BACKUPS (simple mode)
+	LocalGFSDaily          int    // GFS limits
+	LocalGFSWeekly         int
+	LocalGFSMonthly        int
+	LocalGFSYearly         int
+	LocalGFSCurrentDaily   int // GFS current counts
+	LocalGFSCurrentWeekly  int
+	LocalGFSCurrentMonthly int
+	LocalGFSCurrentYearly  int
+	LocalBackups           int // Total current backups
 
 	SecondaryEnabled       bool
 	SecondaryStatus        string
@@ -98,17 +112,17 @@ type NotificationData struct {
 	SecondaryUsagePercent  float64
 
 	// Secondary retention info
-	SecondaryRetentionPolicy      string
-	SecondaryRetentionLimit       int
-	SecondaryGFSDaily             int
-	SecondaryGFSWeekly            int
-	SecondaryGFSMonthly           int
-	SecondaryGFSYearly            int
-	SecondaryGFSCurrentDaily      int
-	SecondaryGFSCurrentWeekly     int
-	SecondaryGFSCurrentMonthly    int
-	SecondaryGFSCurrentYearly     int
-	SecondaryBackups              int
+	SecondaryRetentionPolicy   string
+	SecondaryRetentionLimit    int
+	SecondaryGFSDaily          int
+	SecondaryGFSWeekly         int
+	SecondaryGFSMonthly        int
+	SecondaryGFSYearly         int
+	SecondaryGFSCurrentDaily   int
+	SecondaryGFSCurrentWeekly  int
+	SecondaryGFSCurrentMonthly int
+	SecondaryGFSCurrentYearly  int
+	SecondaryBackups           int
 
 	CloudEnabled       bool
 	CloudStatus        string
@@ -116,17 +130,17 @@ type NotificationData struct {
 	CloudCount         int
 
 	// Cloud retention info
-	CloudRetentionPolicy      string
-	CloudRetentionLimit       int
-	CloudGFSDaily             int
-	CloudGFSWeekly            int
-	CloudGFSMonthly           int
-	CloudGFSYearly            int
-	CloudGFSCurrentDaily      int
-	CloudGFSCurrentWeekly     int
-	CloudGFSCurrentMonthly    int
-	CloudGFSCurrentYearly     int
-	CloudBackups              int
+	CloudRetentionPolicy   string
+	CloudRetentionLimit    int
+	CloudGFSDaily          int
+	CloudGFSWeekly         int
+	CloudGFSMonthly        int
+	CloudGFSYearly         int
+	CloudGFSCurrentDaily   int
+	CloudGFSCurrentWeekly  int
+	CloudGFSCurrentMonthly int
+	CloudGFSCurrentYearly  int
+	CloudBackups           int
 
 	// Email notification status (for Telegram messages)
 	EmailStatus    string

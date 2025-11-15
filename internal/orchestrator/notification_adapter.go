@@ -43,6 +43,10 @@ func (n *NotificationAdapter) Notify(ctx context.Context, stats *BackupStats) er
 	n.logger.Debug("NotificationData created: status=%s, hostname=%s, files_included=%d, errors=%d, warnings=%d",
 		data.Status.String(), data.Hostname, data.FilesIncluded, data.ErrorCount, data.WarningCount)
 
+	statusEmoji := notify.GetStatusEmoji(data.Status)
+	n.logger.Debug("Notification subject emoji resolved: %s (status=%s, exit_code=%d)",
+		statusEmoji, strings.ToUpper(data.Status.String()), data.ExitCode)
+
 	// Send notification
 	n.logger.Debug("Calling %s.Send()...", n.notifier.Name())
 	result, err := n.notifier.Send(ctx, data)
@@ -204,17 +208,17 @@ func (n *NotificationAdapter) convertBackupStatsToNotificationData(stats *Backup
 		LocalUsagePercent:  calculateUsagePercent(stats.LocalFreeSpace, stats.LocalTotalSpace),
 
 		// Local retention info
-		LocalRetentionPolicy:      stats.LocalRetentionPolicy,
-		LocalRetentionLimit:       stats.MaxLocalBackups,
-		LocalGFSDaily:             stats.LocalGFSDaily,
-		LocalGFSWeekly:            stats.LocalGFSWeekly,
-		LocalGFSMonthly:           stats.LocalGFSMonthly,
-		LocalGFSYearly:            stats.LocalGFSYearly,
-		LocalGFSCurrentDaily:      stats.LocalGFSCurrentDaily,
-		LocalGFSCurrentWeekly:     stats.LocalGFSCurrentWeekly,
-		LocalGFSCurrentMonthly:    stats.LocalGFSCurrentMonthly,
-		LocalGFSCurrentYearly:     stats.LocalGFSCurrentYearly,
-		LocalBackups:              stats.LocalBackups,
+		LocalRetentionPolicy:   stats.LocalRetentionPolicy,
+		LocalRetentionLimit:    stats.MaxLocalBackups,
+		LocalGFSDaily:          stats.LocalGFSDaily,
+		LocalGFSWeekly:         stats.LocalGFSWeekly,
+		LocalGFSMonthly:        stats.LocalGFSMonthly,
+		LocalGFSYearly:         stats.LocalGFSYearly,
+		LocalGFSCurrentDaily:   stats.LocalGFSCurrentDaily,
+		LocalGFSCurrentWeekly:  stats.LocalGFSCurrentWeekly,
+		LocalGFSCurrentMonthly: stats.LocalGFSCurrentMonthly,
+		LocalGFSCurrentYearly:  stats.LocalGFSCurrentYearly,
+		LocalBackups:           stats.LocalBackups,
 
 		SecondaryEnabled:       stats.SecondaryEnabled,
 		SecondaryStatus:        secondaryStatus,
@@ -227,17 +231,17 @@ func (n *NotificationAdapter) convertBackupStatsToNotificationData(stats *Backup
 		SecondaryUsagePercent:  calculateUsagePercent(stats.SecondaryFreeSpace, stats.SecondaryTotalSpace),
 
 		// Secondary retention info
-		SecondaryRetentionPolicy:      stats.SecondaryRetentionPolicy,
-		SecondaryRetentionLimit:       stats.MaxSecondaryBackups,
-		SecondaryGFSDaily:             stats.SecondaryGFSDaily,
-		SecondaryGFSWeekly:            stats.SecondaryGFSWeekly,
-		SecondaryGFSMonthly:           stats.SecondaryGFSMonthly,
-		SecondaryGFSYearly:            stats.SecondaryGFSYearly,
-		SecondaryGFSCurrentDaily:      stats.SecondaryGFSCurrentDaily,
-		SecondaryGFSCurrentWeekly:     stats.SecondaryGFSCurrentWeekly,
-		SecondaryGFSCurrentMonthly:    stats.SecondaryGFSCurrentMonthly,
-		SecondaryGFSCurrentYearly:     stats.SecondaryGFSCurrentYearly,
-		SecondaryBackups:              stats.SecondaryBackups,
+		SecondaryRetentionPolicy:   stats.SecondaryRetentionPolicy,
+		SecondaryRetentionLimit:    stats.MaxSecondaryBackups,
+		SecondaryGFSDaily:          stats.SecondaryGFSDaily,
+		SecondaryGFSWeekly:         stats.SecondaryGFSWeekly,
+		SecondaryGFSMonthly:        stats.SecondaryGFSMonthly,
+		SecondaryGFSYearly:         stats.SecondaryGFSYearly,
+		SecondaryGFSCurrentDaily:   stats.SecondaryGFSCurrentDaily,
+		SecondaryGFSCurrentWeekly:  stats.SecondaryGFSCurrentWeekly,
+		SecondaryGFSCurrentMonthly: stats.SecondaryGFSCurrentMonthly,
+		SecondaryGFSCurrentYearly:  stats.SecondaryGFSCurrentYearly,
+		SecondaryBackups:           stats.SecondaryBackups,
 
 		CloudEnabled:       stats.CloudEnabled,
 		CloudStatus:        cloudStatus,
@@ -245,17 +249,17 @@ func (n *NotificationAdapter) convertBackupStatsToNotificationData(stats *Backup
 		CloudCount:         stats.CloudBackups,
 
 		// Cloud retention info
-		CloudRetentionPolicy:      stats.CloudRetentionPolicy,
-		CloudRetentionLimit:       stats.MaxCloudBackups,
-		CloudGFSDaily:             stats.CloudGFSDaily,
-		CloudGFSWeekly:            stats.CloudGFSWeekly,
-		CloudGFSMonthly:           stats.CloudGFSMonthly,
-		CloudGFSYearly:            stats.CloudGFSYearly,
-		CloudGFSCurrentDaily:      stats.CloudGFSCurrentDaily,
-		CloudGFSCurrentWeekly:     stats.CloudGFSCurrentWeekly,
-		CloudGFSCurrentMonthly:    stats.CloudGFSCurrentMonthly,
-		CloudGFSCurrentYearly:     stats.CloudGFSCurrentYearly,
-		CloudBackups:              stats.CloudBackups,
+		CloudRetentionPolicy:   stats.CloudRetentionPolicy,
+		CloudRetentionLimit:    stats.MaxCloudBackups,
+		CloudGFSDaily:          stats.CloudGFSDaily,
+		CloudGFSWeekly:         stats.CloudGFSWeekly,
+		CloudGFSMonthly:        stats.CloudGFSMonthly,
+		CloudGFSYearly:         stats.CloudGFSYearly,
+		CloudGFSCurrentDaily:   stats.CloudGFSCurrentDaily,
+		CloudGFSCurrentWeekly:  stats.CloudGFSCurrentWeekly,
+		CloudGFSCurrentMonthly: stats.CloudGFSCurrentMonthly,
+		CloudGFSCurrentYearly:  stats.CloudGFSCurrentYearly,
+		CloudBackups:           stats.CloudBackups,
 
 		EmailStatus:    emailStatus,
 		TelegramStatus: telegramStatus,

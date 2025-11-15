@@ -261,33 +261,33 @@ type BackupStats struct {
 	MaxCloudBackups     int
 
 	// Retention policy info (for notifications)
-	LocalRetentionPolicy      string
-	LocalGFSDaily             int
-	LocalGFSWeekly            int
-	LocalGFSMonthly           int
-	LocalGFSYearly            int
-	LocalGFSCurrentDaily      int
-	LocalGFSCurrentWeekly     int
-	LocalGFSCurrentMonthly    int
-	LocalGFSCurrentYearly     int
-	SecondaryRetentionPolicy  string
-	SecondaryGFSDaily         int
-	SecondaryGFSWeekly        int
-	SecondaryGFSMonthly       int
-	SecondaryGFSYearly        int
-	SecondaryGFSCurrentDaily  int
-	SecondaryGFSCurrentWeekly int
+	LocalRetentionPolicy       string
+	LocalGFSDaily              int
+	LocalGFSWeekly             int
+	LocalGFSMonthly            int
+	LocalGFSYearly             int
+	LocalGFSCurrentDaily       int
+	LocalGFSCurrentWeekly      int
+	LocalGFSCurrentMonthly     int
+	LocalGFSCurrentYearly      int
+	SecondaryRetentionPolicy   string
+	SecondaryGFSDaily          int
+	SecondaryGFSWeekly         int
+	SecondaryGFSMonthly        int
+	SecondaryGFSYearly         int
+	SecondaryGFSCurrentDaily   int
+	SecondaryGFSCurrentWeekly  int
 	SecondaryGFSCurrentMonthly int
-	SecondaryGFSCurrentYearly int
-	CloudRetentionPolicy      string
-	CloudGFSDaily             int
-	CloudGFSWeekly            int
-	CloudGFSMonthly           int
-	CloudGFSYearly            int
-	CloudGFSCurrentDaily      int
-	CloudGFSCurrentWeekly     int
-	CloudGFSCurrentMonthly    int
-	CloudGFSCurrentYearly     int
+	SecondaryGFSCurrentYearly  int
+	CloudRetentionPolicy       string
+	CloudGFSDaily              int
+	CloudGFSWeekly             int
+	CloudGFSMonthly            int
+	CloudGFSYearly             int
+	CloudGFSCurrentDaily       int
+	CloudGFSCurrentWeekly      int
+	CloudGFSCurrentMonthly     int
+	CloudGFSCurrentYearly      int
 
 	// Error/warning counts
 	ErrorCount   int
@@ -563,6 +563,7 @@ func (o *Orchestrator) RunGoBackup(ctx context.Context, pType types.ProxmoxType,
 		EmailStatus:              "ok",
 		ServerID:                 o.serverID,
 		ServerMAC:                o.serverMAC,
+		ExitCode:                 types.ExitSuccess.Int(),
 	}
 	if logFile := strings.TrimSpace(os.Getenv("LOG_FILE")); logFile != "" {
 		stats.LogFilePath = logFile
@@ -928,6 +929,17 @@ func (o *Orchestrator) RunGoBackup(ctx context.Context, pType types.ProxmoxType,
 	} else {
 		o.logger.Debug("No log file path specified, error/warning counts will be 0")
 	}
+
+	// Determine aggregated exit code (similar to legacy Bash logic)
+	switch {
+	case stats.ErrorCount > 0:
+		stats.ExitCode = types.ExitBackupError.Int()
+	case stats.WarningCount > 0:
+		stats.ExitCode = types.ExitGenericError.Int()
+	default:
+		stats.ExitCode = types.ExitSuccess.Int()
+	}
+	o.logger.Debug("Aggregated exit code based on log analysis: %d", stats.ExitCode)
 
 	if len(o.storageTargets) == 0 {
 		fmt.Println()

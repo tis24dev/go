@@ -42,13 +42,19 @@ const (
 )
 
 func main() {
-	os.Exit(run())
+	code := run()
+	status := notify.StatusFromExitCode(code)
+	statusLabel := strings.ToUpper(status.String())
+	emoji := notify.GetStatusEmoji(status)
+	logging.Info("Final exit status: %s %s (code=%d)", emoji, statusLabel, code)
+	os.Exit(code)
 }
 
 var closeStdinOnce sync.Once
 
 func run() int {
 	bootstrap := logging.NewBootstrapLogger()
+	finalExitCode := types.ExitSuccess.Int()
 
 	defer func() {
 		if r := recover(); r != nil {
@@ -747,6 +753,13 @@ func run() int {
 
 			logging.Info("✓ Go backup orchestration completed")
 			logServerIdentityValues(serverIDValue, serverMACValue)
+
+			exitCode := stats.ExitCode
+			status := notify.StatusFromExitCode(exitCode)
+			statusLabel := strings.ToUpper(status.String())
+			emoji := notify.GetStatusEmoji(status)
+			logging.Info("Exit status: %s %s (code=%d)", emoji, statusLabel, exitCode)
+			finalExitCode = exitCode
 		} else {
 			logging.Info("Starting legacy bash backup orchestration...")
 			if err := orch.RunBackup(ctx, envInfo.Type); err != nil {
@@ -810,7 +823,7 @@ func run() int {
 	fmt.Println("  --dry-run          - Test without changes")
 	fmt.Println()
 
-	return types.ExitSuccess.Int()
+	return finalExitCode
 }
 
 // checkGoRuntimeVersion ensures the running binary was built with at least the specified Go version (semver: major.minor.patch).
