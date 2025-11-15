@@ -40,6 +40,52 @@ func (o *Orchestrator) RegisterNotificationChannel(channel NotificationChannel) 
 	o.notificationChannels = append(o.notificationChannels, channel)
 }
 
+func (o *Orchestrator) dispatchNotifications(ctx context.Context, stats *BackupStats) {
+	if o == nil || o.logger == nil {
+		return
+	}
+
+	type notifierEntry struct {
+		name    string
+		enabled bool
+	}
+
+	cfg := o.cfg
+	entries := []notifierEntry{
+		{name: "Telegram", enabled: cfg != nil && cfg.TelegramEnabled},
+		{name: "Email", enabled: cfg != nil && cfg.EmailEnabled},
+		{name: "Gotify", enabled: cfg != nil && cfg.GotifyEnabled},
+		{name: "Webhook", enabled: cfg != nil && cfg.WebhookEnabled},
+	}
+
+	channelIndex := 0
+	nextChannel := func() NotificationChannel {
+		if channelIndex >= len(o.notificationChannels) {
+			return nil
+		}
+		ch := o.notificationChannels[channelIndex]
+		channelIndex++
+		return ch
+	}
+
+	for _, entry := range entries {
+		if !entry.enabled {
+			o.logger.Skip("%s: disabled", entry.name)
+			continue
+		}
+		if channel := nextChannel(); channel != nil {
+			_ = channel.Notify(ctx, stats) // Ignore errors - notifications are non-critical
+		}
+	}
+
+	// Dispatch any remaining channels (custom or future ones)
+	for channelIndex < len(o.notificationChannels) {
+		if channel := nextChannel(); channel != nil {
+			_ = channel.Notify(ctx, stats)
+		}
+	}
+}
+
 func (o *Orchestrator) dispatchPostBackup(ctx context.Context, stats *BackupStats) error {
 	// Phase 1: Storage operations (critical - failures abort backup)
 	for _, target := range o.storageTargets {
@@ -54,13 +100,9 @@ func (o *Orchestrator) dispatchPostBackup(ctx context.Context, stats *BackupStat
 
 	// Phase 2: Notifications (non-critical - failures don't abort backup)
 	// Notification errors are logged but never propagated
-	if len(o.notificationChannels) > 0 {
-		fmt.Println()
-		o.logStep(7, "Notifications - dispatching channels")
-	}
-	for _, channel := range o.notificationChannels {
-		_ = channel.Notify(ctx, stats) // Ignore errors - notifications are non-critical
-	}
+	fmt.Println()
+	o.logStep(7, "Notifications - dispatching channels")
+	o.dispatchNotifications(ctx, stats)
 
 	// Phase 3: Close log file and dispatch to storage/rotation
 	fmt.Println()
@@ -169,7 +211,7 @@ func (o *Orchestrator) rotateLogFiles(ctx context.Context) error {
 			}
 		}
 	} else {
-		o.logger.Info("Secondary logs: disabled")
+		o.logger.Skip("Secondary logs: disabled")
 	}
 
 	// Rotate cloud logs (use same retention as backups)
@@ -180,7 +222,7 @@ func (o *Orchestrator) rotateLogFiles(ctx context.Context) error {
 			}
 		}
 	} else {
-		o.logger.Info("Cloud logs: disabled")
+		o.logger.Skip("Cloud logs: disabled")
 	}
 
 	return nil
@@ -188,7 +230,7 @@ func (o *Orchestrator) rotateLogFiles(ctx context.Context) error {
 
 func (o *Orchestrator) logLogRetentionIntro(label string, keep int, path string) bool {
 	if keep <= 0 {
-		o.logger.Info("%s logs: retention disabled (keep=%d)", label, keep)
+		o.logger.Skip("%s logs: retention disabled (keep=%d)", label, keep)
 		return false
 	}
 	o.logger.Info("%s logs: applying retention policy...", label)

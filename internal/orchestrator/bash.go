@@ -237,6 +237,9 @@ type BackupStats struct {
 	LocalPath                 string
 	SecondaryPath             string
 	CloudPath                 string
+	LocalStatus               string
+	SecondaryStatus           string
+	CloudStatus               string
 
 	// System identification
 	ServerID  string
@@ -514,6 +517,22 @@ func (o *Orchestrator) SetTempDirRegistry(reg *TempDirRegistry) {
 	o.tempRegistry = reg
 }
 
+func (o *Orchestrator) describeTelegramConfig() string {
+	if o == nil || o.cfg == nil || !o.cfg.TelegramEnabled {
+		return "disabled"
+	}
+	mode := strings.ToLower(strings.TrimSpace(o.cfg.TelegramBotType))
+	if mode == "" {
+		return "personal"
+	}
+	switch mode {
+	case "personal", "centralized":
+		return mode
+	default:
+		return mode
+	}
+}
+
 func (o *Orchestrator) ensureTempRegistry() *TempDirRegistry {
 	if o.tempRegistry != nil {
 		return o.tempRegistry
@@ -560,7 +579,11 @@ func (o *Orchestrator) RunGoBackup(ctx context.Context, pType types.ProxmoxType,
 		CompressionMode:          o.compressionMode,
 		CompressionThreads:       o.compressionThreads,
 		LocalPath:                o.backupPath,
+		LocalStatus:              "ok",
+		SecondaryStatus:          "disabled",
+		CloudStatus:              "disabled",
 		EmailStatus:              "ok",
+		TelegramStatus:           o.describeTelegramConfig(),
 		ServerID:                 o.serverID,
 		ServerMAC:                o.serverMAC,
 		ExitCode:                 types.ExitSuccess.Int(),
@@ -580,6 +603,18 @@ func (o *Orchestrator) RunGoBackup(ctx context.Context, pType types.ProxmoxType,
 		if stats.LocalPath == "" {
 			stats.LocalPath = o.cfg.BackupPath
 		}
+	}
+
+	if stats.SecondaryEnabled && strings.TrimSpace(stats.SecondaryStatus) == "" {
+		stats.SecondaryStatus = "ok"
+	} else if !stats.SecondaryEnabled {
+		stats.SecondaryStatus = "disabled"
+	}
+
+	if stats.CloudEnabled && strings.TrimSpace(stats.CloudStatus) == "" {
+		stats.CloudStatus = "ok"
+	} else if !stats.CloudEnabled {
+		stats.CloudStatus = "disabled"
 	}
 
 	o.logger.Debug("Creating temporary directory for collection output")
@@ -902,7 +937,7 @@ func (o *Orchestrator) RunGoBackup(ctx context.Context, pType types.ProxmoxType,
 			o.logger.Debug("Bundle ready: %s", filepath.Base(bundlePath))
 		} else {
 			fmt.Println()
-			o.logStep(5, "Bundling disabled - skipping")
+			o.logger.Skip("Bundling disabled")
 		}
 
 		stats.EndTime = time.Now()

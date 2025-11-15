@@ -61,14 +61,15 @@ type Config struct {
 	SecureAccount    string
 
 	// Storage settings
-	SecondaryEnabled    bool
-	SecondaryPath       string
-	CloudEnabled        bool
-	CloudRemote         string
-	CloudRemotePath     string
-	CloudUploadMode     string
-	CloudParallelJobs   int
-	CloudParallelVerify bool
+	SecondaryEnabled      bool
+	SecondaryPath         string
+	CloudEnabled          bool
+	CloudRemote           string
+	CloudRemotePath       string
+	CloudUploadMode       string
+	CloudParallelJobs     int
+	CloudParallelVerify   bool
+	CloudWriteHealthCheck bool
 
 	// Rclone settings with comprehensible timeout names
 	// RcloneTimeoutConnection: timeout for checking if remote is accessible (default: 30s)
@@ -119,6 +120,14 @@ type Config struct {
 	EmailFallbackSendmail bool
 	EmailRecipient        string // Single recipient, empty = auto-detect
 	EmailFrom             string
+
+	// Gotify Notifications
+	GotifyEnabled         bool
+	GotifyServerURL       string
+	GotifyToken           string
+	GotifyPrioritySuccess int
+	GotifyPriorityWarning int
+	GotifyPriorityFailure int
 
 	// Cloud Relay Configuration (hardcoded for compatibility)
 	CloudflareWorkerURL   string
@@ -300,6 +309,7 @@ func (c *Config) loadEnvOverrides() {
 		"SECONDARY_ENABLED", "SECONDARY_PATH", "SECONDARY_LOG_PATH",
 		"CLOUD_ENABLED", "CLOUD_REMOTE", "CLOUD_REMOTE_PATH", "CLOUD_LOG_PATH",
 		"CLOUD_UPLOAD_MODE", "CLOUD_PARALLEL_MAX_JOBS", "CLOUD_PARALLEL_VERIFICATION",
+		"CLOUD_WRITE_HEALTHCHECK",
 		"RCLONE_TIMEOUT_CONNECTION", "RCLONE_TIMEOUT_OPERATION",
 		"RCLONE_BANDWIDTH_LIMIT", "RCLONE_TRANSFERS", "RCLONE_RETRIES", "RCLONE_VERIFY_METHOD",
 		"CLOUD_BATCH_SIZE", "CLOUD_BATCH_PAUSE",
@@ -459,6 +469,7 @@ func (c *Config) parse() error {
 		c.CloudParallelJobs = 1
 	}
 	c.CloudParallelVerify = c.getBool("CLOUD_PARALLEL_VERIFICATION", false)
+	c.CloudWriteHealthCheck = c.getBool("CLOUD_WRITE_HEALTHCHECK", false)
 
 	// Rclone settings with comprehensible timeout names
 	c.RcloneTimeoutConnection = c.getInt("RCLONE_TIMEOUT_CONNECTION", 30)
@@ -513,6 +524,14 @@ func (c *Config) parse() error {
 	c.EmailFallbackSendmail = c.getBool("EMAIL_FALLBACK_SENDMAIL", true)
 	c.EmailRecipient = c.getString("EMAIL_RECIPIENT", "")
 	c.EmailFrom = c.getString("EMAIL_FROM", "no-reply@proxmox.tis24.it")
+
+	// Gotify Notifications
+	c.GotifyEnabled = c.getBool("GOTIFY_ENABLED", false)
+	c.GotifyServerURL = strings.TrimSpace(c.getString("GOTIFY_SERVER_URL", ""))
+	c.GotifyToken = strings.TrimSpace(c.getString("GOTIFY_TOKEN", ""))
+	c.GotifyPrioritySuccess = c.ensurePositiveInt("GOTIFY_PRIORITY_SUCCESS", 2)
+	c.GotifyPriorityWarning = c.ensurePositiveInt("GOTIFY_PRIORITY_WARNING", 5)
+	c.GotifyPriorityFailure = c.ensurePositiveInt("GOTIFY_PRIORITY_FAILURE", 8)
 
 	// Cloud Relay Configuration (hardcoded for Bash compatibility)
 	c.CloudflareWorkerURL = "https://relay-tis24.weathered-hill-5216.workers.dev/send"
@@ -649,6 +668,14 @@ func (c *Config) getInt(key string, defaultValue int) int {
 		}
 	}
 	return defaultValue
+}
+
+func (c *Config) ensurePositiveInt(key string, defaultValue int) int {
+	value := c.getInt(key, defaultValue)
+	if value <= 0 {
+		return defaultValue
+	}
+	return value
 }
 
 func (c *Config) getIntList(key string, defaultValue []int) []int {

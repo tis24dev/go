@@ -130,7 +130,6 @@ func run() int {
 	if sig := buildSignature(); sig != "" {
 		bootstrap.Printf("  Build Signature: %s", sig)
 	}
-	bootstrap.Println("  Phase: 5.1 - Notifications")
 	bootstrap.Println("===========================================")
 	bootstrap.Println("")
 
@@ -506,7 +505,7 @@ func run() int {
 			logStorageInitSummary(formatStorageInitSummary("Secondary storage", cfg, storage.LocationSecondary, secondaryStats, secondaryBackups))
 		}
 	} else {
-		logging.Info("Path Secondary: disabled")
+		logging.Skip("Path Secondary: disabled")
 	}
 
 	// Cloud storage - optional
@@ -528,7 +527,7 @@ func run() int {
 			logStorageInitSummary(formatStorageInitSummary("Cloud storage", cfg, storage.LocationCloud, cloudStats, cloudBackups))
 		}
 	} else {
-		logging.Info("Path Cloud: disabled")
+		logging.Skip("Path Cloud: disabled")
 	}
 
 	// Initialize notification channels
@@ -550,10 +549,10 @@ func run() int {
 		} else {
 			telegramAdapter := orchestrator.NewNotificationAdapter(telegramNotifier, logger)
 			orch.RegisterNotificationChannel(telegramAdapter)
-			logging.Info("✓ Telegram notifications initialized (mode: %s)", cfg.TelegramBotType)
+			logging.Info("✓ Telegram initialized (mode: %s)", cfg.TelegramBotType)
 		}
 	} else {
-		logging.Info("Telegram notifications: disabled")
+		logging.Skip("Telegram: disabled")
 	}
 
 	// Email notifications
@@ -579,10 +578,32 @@ func run() int {
 		} else {
 			emailAdapter := orchestrator.NewNotificationAdapter(emailNotifier, logger)
 			orch.RegisterNotificationChannel(emailAdapter)
-			logging.Info("✓ Email notifications initialized (method: %s)", cfg.EmailDeliveryMethod)
+			logging.Info("✓ Email initialized (method: %s)", cfg.EmailDeliveryMethod)
 		}
 	} else {
-		logging.Info("Email notifications: disabled")
+		logging.Skip("Email: disabled")
+	}
+
+	// Gotify notifications
+	if cfg.GotifyEnabled {
+		gotifyConfig := notify.GotifyConfig{
+			Enabled:         true,
+			ServerURL:       cfg.GotifyServerURL,
+			Token:           cfg.GotifyToken,
+			PrioritySuccess: cfg.GotifyPrioritySuccess,
+			PriorityWarning: cfg.GotifyPriorityWarning,
+			PriorityFailure: cfg.GotifyPriorityFailure,
+		}
+		gotifyNotifier, err := notify.NewGotifyNotifier(gotifyConfig, logger)
+		if err != nil {
+			logging.Warning("Failed to initialize Gotify notifier: %v", err)
+		} else {
+			gotifyAdapter := orchestrator.NewNotificationAdapter(gotifyNotifier, logger)
+			orch.RegisterNotificationChannel(gotifyAdapter)
+			logging.Info("✓ Gotify initialized")
+		}
+	} else {
+		logging.Skip("Gotify: disabled")
 	}
 
 	// Webhook Notifications
@@ -600,10 +621,10 @@ func run() int {
 
 			logging.Debug("Registering webhook notification channel with orchestrator...")
 			orch.RegisterNotificationChannel(webhookAdapter)
-			logging.Info("✓ Webhook notifications initialized (%d endpoint(s))", len(webhookConfig.Endpoints))
+			logging.Info("✓ Webhook initialized (%d endpoint(s))", len(webhookConfig.Endpoints))
 		}
 	} else {
-		logging.Info("Webhook notifications: disabled")
+		logging.Skip("Webhook: disabled")
 	}
 
 	fmt.Println()
@@ -624,12 +645,12 @@ func run() int {
 	if cfg.SecondaryEnabled {
 		logging.Info("  Secondary storage: %s", formatStorageLabel(cfg.SecondaryPath, secondaryFS))
 	} else {
-		logging.Info("  Secondary storage: disabled")
+		logging.Skip("  Secondary storage: disabled")
 	}
 	if cfg.CloudEnabled {
 		logging.Info("  Cloud storage: %s", formatStorageLabel(cfg.CloudRemote, cloudFS))
 	} else {
-		logging.Info("  Cloud storage: disabled")
+		logging.Skip("  Cloud storage: disabled")
 	}
 	fmt.Println()
 
@@ -640,19 +661,19 @@ func run() int {
 		if strings.TrimSpace(cfg.SecondaryLogPath) != "" {
 			logging.Info("  Secondary: %s", cfg.SecondaryLogPath)
 		} else {
-			logging.Info("  Secondary: disabled (log path not configured)")
+			logging.Skip("  Secondary: disabled (log path not configured)")
 		}
 	} else {
-		logging.Info("  Secondary: disabled")
+		logging.Skip("  Secondary: disabled")
 	}
 	if cfg.CloudEnabled {
 		if strings.TrimSpace(cfg.CloudLogPath) != "" {
 			logging.Info("  Cloud: %s", cfg.CloudLogPath)
 		} else {
-			logging.Info("  Cloud: disabled (log path not configured)")
+			logging.Skip("  Cloud: disabled (log path not configured)")
 		}
 	} else {
-		logging.Info("  Cloud: disabled")
+		logging.Skip("  Cloud: disabled")
 	}
 	fmt.Println()
 
@@ -660,6 +681,8 @@ func run() int {
 	logging.Info("Notification configuration:")
 	logging.Info("  Telegram: %v", cfg.TelegramEnabled)
 	logging.Info("  Email: %v", cfg.EmailEnabled)
+	logging.Info("  Gotify: %v", cfg.GotifyEnabled)
+	logging.Info("  Webhook: %v", cfg.WebhookEnabled)
 	logging.Info("  Metrics: %v", cfg.MetricsEnabled)
 	fmt.Println()
 
@@ -667,7 +690,8 @@ func run() int {
 	if useGoPipeline {
 		logging.Debug("Go backup pipeline enabled")
 	} else {
-		logging.Info("Go backup pipeline disabled (ENABLE_GO_BACKUP=false). Using legacy bash workflow.")
+		logging.Info("Go backup pipeline disabled (ENABLE_GO_BACKUP=false).")
+		logging.Info("Using legacy bash workflow.")
 	}
 
 	// Run backup orchestration
@@ -881,6 +905,10 @@ func featuresNeedNetwork(cfg *config.Config) (bool, []string) {
 	// Email via relay
 	if cfg.EmailEnabled && strings.EqualFold(cfg.EmailDeliveryMethod, "relay") {
 		reasons = append(reasons, "Email relay delivery")
+	}
+	// Gotify
+	if cfg.GotifyEnabled {
+		reasons = append(reasons, "Gotify notifications")
 	}
 	// Webhooks
 	if cfg.WebhookEnabled {

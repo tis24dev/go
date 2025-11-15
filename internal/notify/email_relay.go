@@ -251,17 +251,17 @@ func buildReportData(data *NotificationData) map[string]interface{} {
 		// Nested backup object with sub-objects
 		"backup": map[string]interface{}{
 			"primary": map[string]interface{}{
-				"status": data.LocalStatus,
+				"status": data.LocalStatusSummary,
 				"emoji":  GetStorageEmoji(data.LocalStatus),
 				"count":  data.LocalCount,
 			},
 			"secondary": map[string]interface{}{
-				"status": data.SecondaryStatus,
+				"status": data.SecondaryStatusSummary,
 				"emoji":  GetStorageEmoji(data.SecondaryStatus),
 				"count":  data.SecondaryCount,
 			},
 			"cloud": map[string]interface{}{
-				"status": data.CloudStatus,
+				"status": data.CloudStatusSummary,
 				"emoji":  GetStorageEmoji(data.CloudStatus),
 				"count":  data.CloudCount,
 			},

@@ -98,7 +98,7 @@ func (c *Collector) CollectPVEConfigs(ctx context.Context) error {
 			c.logger.Debug("VM/CT configuration collection completed")
 		}
 	} else {
-		c.logger.Info("VM/container configuration backup disabled - skipping")
+		c.logger.Skip("VM/container configuration backup disabled.")
 	}
 
 	if c.config.BackupPVEJobs {
@@ -187,7 +187,8 @@ func (c *Collector) collectPVEDirectories(ctx context.Context, clustered bool) e
 		}
 	} else {
 		if !c.config.BackupClusterConfig {
-			c.logger.Info("PVE cluster backup disabled - skipping Corosync configuration")
+			c.logger.Skip("PVE cluster backup disabled")
+			c.logger.Skip("Corosync configuration")
 		} else {
 			c.logger.Info("PVE cluster not configured (single node) - skipping Corosync configuration")
 		}
@@ -218,7 +219,7 @@ func (c *Collector) collectPVEDirectories(ctx context.Context, clustered bool) e
 			c.logger.Warning("Failed to access firewall configuration %s: %v", firewallSrc, err)
 		}
 	} else {
-		c.logger.Info("PVE firewall backup disabled - skipping")
+		c.logger.Skip("PVE firewall backup disabled.")
 	}
 
 	// VZDump configuration
@@ -237,7 +238,7 @@ func (c *Collector) collectPVEDirectories(ctx context.Context, clustered bool) e
 			c.logger.Debug("No vzdump.conf found")
 		}
 	} else {
-		c.logger.Info("VZDump configuration backup disabled - skipping")
+		c.logger.Skip("VZDump configuration backup disabled.")
 	}
 
 	c.logger.Debug("PVE directory snapshot completed")

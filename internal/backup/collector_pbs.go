@@ -65,7 +65,7 @@ func (c *Collector) CollectPBSConfigs(ctx context.Context) error {
 			c.logger.Debug("Datastore configuration collection completed")
 		}
 	} else {
-		c.logger.Info("PBS datastore configuration backup disabled - skipping")
+		c.logger.Skip("PBS datastore configuration backup disabled.")
 	}
 
 	// Collect user/ACL configurations
@@ -78,7 +78,7 @@ func (c *Collector) CollectPBSConfigs(ctx context.Context) error {
 			c.logger.Debug("User configuration collection completed")
 		}
 	} else {
-		c.logger.Info("PBS user/ACL backup disabled - skipping")
+		c.logger.Skip("PBS user/ACL backup disabled.")
 	}
 
 	if c.config.BackupPxarFiles {
@@ -89,7 +89,7 @@ func (c *Collector) CollectPBSConfigs(ctx context.Context) error {
 			c.logger.Debug("PXAR metadata collection completed")
 		}
 	} else {
-		c.logger.Info("PBS PXAR metadata collection disabled - skipping")
+		c.logger.Skip("PBS PXAR metadata collection disabled.")
 	}
 
 	c.logger.Info("PBS configuration collection completed")

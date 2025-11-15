@@ -25,11 +25,11 @@ func NewNotificationAdapter(notifier notify.Notifier, logger *logging.Logger) *N
 
 // Notify implements the NotificationChannel interface
 func (n *NotificationAdapter) Notify(ctx context.Context, stats *BackupStats) error {
-	n.logger.Info("Starting %s notification...", n.notifier.Name())
+	n.logger.Info("%s: starting", n.notifier.Name())
 	n.logger.Debug("=== NotificationAdapter.Notify() called for '%s' notifier ===", n.notifier.Name())
 
 	if !n.notifier.IsEnabled() {
-		n.logger.Debug("%s notifications disabled, skipping", n.notifier.Name())
+		n.logger.Debug("%s: disabled, skipping", n.notifier.Name())
 		return nil
 	}
 
@@ -53,7 +53,7 @@ func (n *NotificationAdapter) Notify(ctx context.Context, stats *BackupStats) er
 
 	if err != nil {
 		// Log error but don't abort backup (notifications are non-critical)
-		n.logger.Error("❌ %s notification failed: %v", n.notifier.Name(), err)
+		n.logger.Error("❌ %s: failed: %v", n.notifier.Name(), err)
 		n.recordNotifierStatus(stats, &notify.NotificationResult{
 			Success: false,
 			Method:  n.notifier.Name(),
@@ -68,19 +68,19 @@ func (n *NotificationAdapter) Notify(ctx context.Context, stats *BackupStats) er
 	// Handle three cases: success, fallback success, or failure
 	if !result.Success {
 		// Complete failure
-		n.logger.Warning("WARNING: %s notification reported failure", n.notifier.Name())
+		n.logger.Warning("%s: failure reported", n.notifier.Name())
 		if result.Error != nil {
 			n.logger.Debug("  Error: %v", result.Error)
 		}
 	} else if result.UsedFallback {
 		// Fallback succeeded after primary method failed
-		n.logger.Warning("⚠️ %s notification sent via fallback in %v", n.notifier.Name(), result.Duration)
+		n.logger.Warning("⚠️ %s: sent via fallback in %v", n.notifier.Name(), result.Duration)
 		if result.Error != nil {
 			n.logger.Debug("  Primary method failed: %v", result.Error)
 		}
 	} else {
 		// Primary method succeeded
-		n.logger.Info("✓ %s notification sent successfully (took %v)", n.notifier.Name(), result.Duration)
+		n.logger.Info("✓ %s: sent successfully (took %v)", n.notifier.Name(), result.Duration)
 	}
 
 	n.recordNotifierStatus(stats, result)
@@ -106,19 +106,31 @@ func (n *NotificationAdapter) convertBackupStatsToNotificationData(stats *Backup
 	}
 
 	// Determine storage statuses
-	localStatus := "ok"
-	if stats.ExitCode != 0 {
-		localStatus = "warning"
+	localStatus := strings.TrimSpace(stats.LocalStatus)
+	if localStatus == "" {
+		if stats.ExitCode != 0 {
+			localStatus = "warning"
+		} else {
+			localStatus = "ok"
+		}
 	}
 
-	secondaryStatus := "ok"
-	if !stats.SecondaryEnabled {
-		secondaryStatus = "disabled"
+	secondaryStatus := strings.TrimSpace(stats.SecondaryStatus)
+	if secondaryStatus == "" {
+		if !stats.SecondaryEnabled {
+			secondaryStatus = "disabled"
+		} else {
+			secondaryStatus = "ok"
+		}
 	}
 
-	cloudStatus := "ok"
-	if !stats.CloudEnabled {
-		cloudStatus = "disabled"
+	cloudStatus := strings.TrimSpace(stats.CloudStatus)
+	if cloudStatus == "" {
+		if !stats.CloudEnabled {
+			cloudStatus = "disabled"
+		} else {
+			cloudStatus = "ok"
+		}
 	}
 
 	localStatusSummary := formatBackupStatusSummary(stats.LocalRetentionPolicy, stats.LocalBackups, stats.MaxLocalBackups)
@@ -342,7 +354,16 @@ func (n *NotificationAdapter) recordNotifierStatus(stats *BackupStats, result *n
 
 	switch n.notifier.Name() {
 	case "Telegram":
-		stats.TelegramStatus = describeNotificationResult(result)
+		base := strings.TrimSpace(stats.TelegramStatus)
+		if base == "" {
+			base = "unknown"
+		}
+		statusDetail := describeNotificationResult(result)
+		if statusDetail != "" {
+			stats.TelegramStatus = fmt.Sprintf("%s (%s)", base, statusDetail)
+		} else {
+			stats.TelegramStatus = base
+		}
 	case "Email":
 		stats.EmailStatus = describeNotificationSeverity(result)
 	}

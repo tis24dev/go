@@ -204,6 +204,18 @@ func (l *Logger) Step(format string, args ...interface{}) {
 	l.logWithLabel(types.LogLevelInfo, "STEP", colorOverride, format, args...)
 }
 
+// Skip scrive un log informativo con etichetta SKIP (per elementi disabilitati/ignorati)
+func (l *Logger) Skip(format string, args ...interface{}) {
+	if l == nil {
+		return
+	}
+	colorOverride := ""
+	if l.useColor {
+		colorOverride = "\033[35m"
+	}
+	l.logWithLabel(types.LogLevelInfo, "SKIP", colorOverride, format, args...)
+}
+
 // Warning scrive un log di warning
 func (l *Logger) Warning(format string, args ...interface{}) {
 	l.log(types.LogLevelWarning, format, args...)
@@ -257,6 +269,11 @@ func Info(format string, args ...interface{}) {
 // Step scrive un log STEP usando il logger di default
 func Step(format string, args ...interface{}) {
 	defaultLogger.Step(format, args...)
+}
+
+// Skip scrive un log SKIP usando il logger di default
+func Skip(format string, args ...interface{}) {
+	defaultLogger.Skip(format, args...)
 }
 
 // Warning scrive un log di warning usando il logger di default

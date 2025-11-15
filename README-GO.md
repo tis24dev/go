@@ -26,7 +26,7 @@ See [MIGRATION_PLAN.md](MIGRATION_PLAN.md) for the complete migration roadmap.
 ### Current (Bash)
 - ✅ Multi-storage support (local, secondary, cloud)
 - ✅ Prometheus metrics integration
-- ✅ Telegram & Email notifications
+- ✅ Telegram, Email & Gotify notifications
 - ✅ Sophisticated logging with buffering
 - ✅ Retention policies management
 - ✅ Parallel cloud uploads (rclone)
@@ -213,6 +213,7 @@ The migration from Bash to Go follows a **6-phase incremental approach**:
 #### 5.1 Notifications (Completed)
 - Telegram notifications (personal/centralized modes)
 - Email notifications (relay/sendmail with fallback)
+- Gotify push notifications (self-hosted)
 - HTML email templates
 - Cloud relay parity: worker receives only structured data, HTML/text is kept for the local sendmail fallback
 - Quota-aware retry: 429/quota responses skip remaining attempts and pass directly to sendmail fallback

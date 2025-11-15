@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -48,6 +49,10 @@ func (c *CloudStorage) remoteLabel() string {
 
 func (c *CloudStorage) remoteBase() string {
 	return c.remoteLabel()
+}
+
+func (c *CloudStorage) remoteRoot() string {
+	return strings.TrimSpace(c.remote) + ":"
 }
 
 func (c *CloudStorage) remotePathFor(name string) string {
@@ -162,14 +167,37 @@ func (c *CloudStorage) DetectFilesystem(ctx context.Context) (*FilesystemInfo, e
 		c.config.RcloneTimeoutConnection)
 
 	if err := c.checkRemoteAccessible(ctx); err != nil {
-		c.logger.Warning("WARNING: Cloud remote %s is not accessible: %v", c.remoteLabel(), err)
+		var rcErr *remoteCheckError
+		if errors.As(err, &rcErr) {
+			switch rcErr.kind {
+			case remoteErrorTimeout:
+				c.logger.Warning("WARNING: Cloud remote %s did not respond within %ds: %v",
+					c.remoteLabel(), c.config.RcloneTimeoutConnection, rcErr)
+				c.logger.Warning("HINT: Consider increasing RCLONE_TIMEOUT_CONNECTION for slow remotes")
+			case remoteErrorAuth:
+				c.logger.Warning("WARNING: Cloud remote %s authentication/config failed: %v", c.remoteLabel(), rcErr)
+				c.logger.Warning("HINT: Check your rclone configuration with: rclone config show %s", c.remote)
+			case remoteErrorPath:
+				c.logger.Warning("WARNING: Cloud remote path %s is not accessible: %v", c.remoteLabel(), rcErr)
+				c.logger.Warning("HINT: Verify CLOUD_REMOTE_PATH or create the path using: rclone mkdir %s", c.remoteLabel())
+			case remoteErrorNetwork:
+				c.logger.Warning("WARNING: Cloud remote %s is not reachable: %v", c.remoteLabel(), rcErr)
+				c.logger.Warning("HINT: Check network connection, DNS and firewall rules")
+			default:
+				c.logger.Warning("WARNING: Cloud remote %s is not accessible: %v", c.remoteLabel(), rcErr)
+				c.logger.Warning("HINT: Check your rclone configuration and network connectivity")
+			}
+		} else {
+			c.logger.Warning("WARNING: Cloud remote %s is not accessible: %v", c.remoteLabel(), err)
+			c.logger.Warning("HINT: Check your rclone configuration with: rclone config show %s", c.remote)
+		}
 		c.logger.Warning("WARNING: Cloud backup will be skipped")
-		c.logger.Warning("HINT: Check your rclone configuration with: rclone config show %s", c.remote)
+
 		return nil, &StorageError{
 			Location:    LocationCloud,
 			Operation:   "check_remote",
 			Path:        c.remoteLabel(),
-			Err:         fmt.Errorf("remote not accessible (connection timeout: %ds): %w", c.config.RcloneTimeoutConnection, err),
+			Err:         fmt.Errorf("remote not accessible: %w", err),
 			IsCritical:  false,
 			Recoverable: true,
 		}
@@ -198,28 +226,185 @@ func (c *CloudStorage) hasRclone() bool {
 	return err == nil
 }
 
+type remoteErrorKind string
+
+const (
+	remoteErrorTimeout remoteErrorKind = "timeout"
+	remoteErrorAuth    remoteErrorKind = "auth"
+	remoteErrorPath    remoteErrorKind = "path"
+	remoteErrorNetwork remoteErrorKind = "network"
+	remoteErrorOther   remoteErrorKind = "other"
+)
+
+type remoteCheckError struct {
+	kind remoteErrorKind
+	msg  string
+	err  error
+}
+
+func (e *remoteCheckError) Error() string {
+	if e == nil {
+		return ""
+	}
+	if e.err != nil {
+		return fmt.Sprintf("%s: %v", e.msg, e.err)
+	}
+	return e.msg
+}
+
+func (e *remoteCheckError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.err
+}
+
 // checkRemoteAccessible checks if the rclone remote is accessible
 // Uses RCLONE_TIMEOUT_CONNECTION (short timeout for connection check)
 func (c *CloudStorage) checkRemoteAccessible(ctx context.Context) error {
-	// Create a context with connection timeout
-	timeoutCtx, cancel := context.WithTimeout(ctx, time.Duration(c.config.RcloneTimeoutConnection)*time.Second)
+	// Create a context with connection timeout for the whole check
+	timeoutSeconds := c.config.RcloneTimeoutConnection
+	if timeoutSeconds <= 0 {
+		timeoutSeconds = 30
+	}
+	timeoutCtx, cancel := context.WithTimeout(ctx, time.Duration(timeoutSeconds)*time.Second)
 	defer cancel()
 
-	// Try to list the root of the remote (quick check)
-	args := []string{"rclone", "lsd", c.remoteBase(), "--max-depth", "1"}
+	const maxAttempts = 3
 
-	c.logger.Debug("Running: %s", strings.Join(args, " "))
-
-	output, err := c.exec(timeoutCtx, args[0], args[1:]...)
-
-	if err != nil {
-		if timeoutCtx.Err() == context.DeadlineExceeded {
-			return fmt.Errorf("connection timeout (%ds) - remote did not respond in time", c.config.RcloneTimeoutConnection)
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		if timeoutCtx.Err() != nil {
+			break
 		}
-		return fmt.Errorf("rclone check failed: %w: %s", err, strings.TrimSpace(string(output)))
+
+		err := c.checkRemoteOnce(timeoutCtx)
+		if err == nil {
+			return nil
+		}
+
+		lastErr = err
+
+		// If the context timed out, wrap as timeout error
+		if timeoutCtx.Err() == context.DeadlineExceeded {
+			return &remoteCheckError{
+				kind: remoteErrorTimeout,
+				msg:  fmt.Sprintf("connection timeout (%ds) - remote did not respond in time", timeoutSeconds),
+				err:  err,
+			}
+		}
+
+		if attempt < maxAttempts {
+			waitTime := time.Duration(attempt) * time.Second
+			c.logger.Debug("Cloud remote check attempt %d/%d failed: %v (retrying in %v)",
+				attempt, maxAttempts, err, waitTime)
+			c.sleep(waitTime)
+		}
+	}
+
+	if lastErr == nil {
+		return &remoteCheckError{
+			kind: remoteErrorOther,
+			msg:  "cloud remote check failed for unknown reasons",
+			err:  nil,
+		}
+	}
+
+	return lastErr
+}
+
+func (c *CloudStorage) checkRemoteOnce(ctx context.Context) error {
+	remoteRoot := c.remoteRoot()
+	if strings.TrimSpace(remoteRoot) == ":" {
+		return &remoteCheckError{
+			kind: remoteErrorOther,
+			msg:  "rclone remote name is empty",
+			err:  nil,
+		}
+	}
+
+	// Step 1: check remote root (remote:)
+	argsRoot := []string{"rclone", "lsf", remoteRoot, "--max-depth", "1"}
+	c.logger.Debug("Running (remote root check): %s", strings.Join(argsRoot, " "))
+
+	output, err := c.exec(ctx, argsRoot[0], argsRoot[1:]...)
+	if err != nil {
+		return classifyRemoteError("remote", remoteRoot, err, output)
+	}
+
+	// Step 2: check specific path (remote:path) if configured
+	remoteBase := c.remoteBase()
+	if remoteBase != remoteRoot {
+		argsPath := []string{"rclone", "lsf", remoteBase, "--max-depth", "1"}
+		c.logger.Debug("Running (remote path check): %s", strings.Join(argsPath, " "))
+
+		output, err = c.exec(ctx, argsPath[0], argsPath[1:]...)
+		if err != nil {
+			return classifyRemoteError("path", remoteBase, err, output)
+		}
+	}
+
+	// Optional: test write access with a temporary object
+	if c.config.CloudWriteHealthCheck {
+		testName := fmt.Sprintf(".pbs-backup-healthcheck-%d", time.Now().UnixNano())
+		testRemote := c.remotePathFor(testName)
+
+		// Try to create the test file
+		argsTouch := []string{"rclone", "touch", testRemote}
+		c.logger.Debug("Running (remote write test): %s", strings.Join(argsTouch, " "))
+		output, err = c.exec(ctx, argsTouch[0], argsTouch[1:]...)
+		if err != nil {
+			return classifyRemoteError("write", testRemote, err, output)
+		}
+
+		// Try to delete the test file (cleanup)
+		argsDelete := []string{"rclone", "deletefile", testRemote}
+		c.logger.Debug("Running (remote write cleanup): %s", strings.Join(argsDelete, " "))
+		output, err = c.exec(ctx, argsDelete[0], argsDelete[1:]...)
+		if err != nil {
+			return classifyRemoteError("cleanup", testRemote, err, output)
+		}
 	}
 
 	return nil
+}
+
+func classifyRemoteError(stage, target string, err error, output []byte) error {
+	text := strings.ToLower(strings.TrimSpace(string(output)))
+	msg := fmt.Sprintf("rclone %s check failed for %s", stage, target)
+
+	kind := remoteErrorOther
+
+	// Try to classify based on typical rclone/network messages
+	switch {
+	case strings.Contains(text, "directory not found") ||
+		strings.Contains(text, "file not found") ||
+		strings.Contains(text, "couldn't find root") ||
+		strings.Contains(text, "path not found"):
+		kind = remoteErrorPath
+	case strings.Contains(text, "failed to create file system") ||
+		strings.Contains(text, "couldn't find configuration section") ||
+		strings.Contains(text, "not found in config file") ||
+		strings.Contains(text, "error reading section"):
+		kind = remoteErrorAuth
+	case strings.Contains(text, "401 unauthorized") ||
+		strings.Contains(text, "403 forbidden") ||
+		strings.Contains(text, "access denied") ||
+		strings.Contains(text, "permission denied"):
+		kind = remoteErrorAuth
+	case strings.Contains(text, "dial tcp") ||
+		strings.Contains(text, "connection refused") ||
+		strings.Contains(text, "network is unreachable") ||
+		strings.Contains(text, "host is down") ||
+		strings.Contains(text, "no such host"):
+		kind = remoteErrorNetwork
+	}
+
+	return &remoteCheckError{
+		kind: kind,
+		msg:  fmt.Sprintf("%s: %s", msg, strings.TrimSpace(string(output))),
+		err:  err,
+	}
 }
 
 // Store uploads a backup file to cloud storage using rclone

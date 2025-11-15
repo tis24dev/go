@@ -46,14 +46,20 @@ func (s *StorageAdapter) Sync(ctx context.Context, stats *BackupStats) error {
 	// Check if backend is enabled
 	if !s.backend.IsEnabled() {
 		s.logger.Debug("%s is disabled, skipping", s.backend.Name())
+		s.setStorageStatus(stats, "disabled")
 		return nil
 	}
 
 	s.logger.Debug("Starting %s operations...", s.backend.Name())
 
+	// Assume success unless operations report otherwise
+	s.setStorageStatus(stats, "ok")
+
 	// Step 1: Detect filesystem and log in real-time
 	var err error
 	fsInfo := s.fsInfo
+	hasWarnings := false
+	hasErrors := false
 	if fsInfo == nil {
 		fsInfo, err = s.backend.DetectFilesystem(ctx)
 		if err != nil {
@@ -62,6 +68,7 @@ func (s *StorageAdapter) Sync(ctx context.Context, stats *BackupStats) error {
 			}
 			s.logger.Warning("WARNING: %s filesystem detection failed: %v", s.backend.Name(), err)
 			s.logger.Warning("WARNING: %s operations will be skipped", s.backend.Name())
+			s.setStorageStatus(stats, "error")
 			return nil
 		}
 		s.fsInfo = fsInfo
@@ -80,7 +87,6 @@ func (s *StorageAdapter) Sync(ctx context.Context, stats *BackupStats) error {
 
 	// Step 3: Store backup
 	s.logger.Info("%s: Storing backup...", s.backend.Name())
-	hasWarnings := false
 	if err := s.backend.Store(ctx, stats.ArchivePath, metadata); err != nil {
 		// Check if error is critical
 		if s.backend.IsCritical() {
@@ -90,7 +96,7 @@ func (s *StorageAdapter) Sync(ctx context.Context, stats *BackupStats) error {
 		// Non-critical error - log warning and continue
 		s.logger.Warning("WARNING: %s store operation failed: %v", s.backend.Name(), err)
 		s.logger.Warning("WARNING: Backup was not saved to %s", s.backend.Name())
-		hasWarnings = true
+		hasErrors = true
 		// Don't return error - continue with retention
 	} else {
 		s.logger.Info("✓ %s: Backup stored successfully", s.backend.Name())
@@ -146,6 +152,7 @@ func (s *StorageAdapter) Sync(ctx context.Context, stats *BackupStats) error {
 	} else {
 		s.logger.Info("✓ %s operations completed", s.backend.Name())
 	}
+	s.finalizeStorageStatus(stats, hasErrors, hasWarnings)
 	return nil
 }
 
@@ -177,7 +184,7 @@ func (s *StorageAdapter) logRetentionPolicyDetails(cfg storage.RetentionConfig) 
 	if cfg.MaxBackups > 0 {
 		s.logger.Info("  Policy: simple (keep %d newest)", cfg.MaxBackups)
 	} else {
-		s.logger.Info("  Policy: simple (disabled)")
+		s.logger.Skip("  Policy: simple (disabled)")
 	}
 }
 
@@ -282,4 +289,34 @@ func clampInt64ToUint64(value int64) uint64 {
 		return 0
 	}
 	return uint64(value)
+}
+
+func (s *StorageAdapter) finalizeStorageStatus(stats *BackupStats, hasErrors, hasWarnings bool) {
+	if stats == nil {
+		return
+	}
+	switch {
+	case hasErrors:
+		s.setStorageStatus(stats, "error")
+	case hasWarnings:
+		s.setStorageStatus(stats, "warning")
+	default:
+		s.setStorageStatus(stats, "ok")
+	}
+}
+
+func (s *StorageAdapter) setStorageStatus(stats *BackupStats, status string) {
+	if stats == nil || s == nil || s.backend == nil {
+		return
+	}
+	switch s.backend.Location() {
+	case storage.LocationSecondary:
+		stats.SecondaryStatus = status
+	case storage.LocationCloud:
+		stats.CloudStatus = status
+	case storage.LocationPrimary:
+		stats.LocalStatus = status
+	default:
+		stats.LocalStatus = status
+	}
 }
